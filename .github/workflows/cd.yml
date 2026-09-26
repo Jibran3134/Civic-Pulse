@@ -30,6 +30,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Normalise image name to lowercase
+        run: echo "IMAGE_NAME=$(echo '${{ env.IMAGE_NAME }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
       - name: Set image tag (SHA)
         id: set-tag
         run: echo "tag=${{ github.sha }}" >> $GITHUB_OUTPUT
@@ -67,6 +70,7 @@ jobs:
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-frontend:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
 
       - name: Generate SBOM (backend)
         uses: anchore/sbom-action@v0
