@@ -96,7 +96,7 @@ class ComplaintsRepository:
             ORDER BY created_at DESC
             LIMIT %s OFFSET %s
         """
-        params.extend([page_size, offset])
+        params.extend([str(page_size), str(offset)])
         async with self._conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(list_query, params)
             rows = await cur.fetchall()
@@ -132,8 +132,8 @@ class ComplaintsRepository:
             await cur.execute(query)
             rows = await cur.fetchall()
 
-        by_category = {}
-        by_priority = {}
+        by_category: dict[str, int] = {}
+        by_priority: dict[str, int] = {}
 
         for row in rows:
             cat = row["category"]

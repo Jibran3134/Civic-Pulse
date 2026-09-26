@@ -15,21 +15,23 @@ down_revision = None
 branch_labels = None
 depends_on = None
 
+# Use create_type=False to prevent auto-creation; we'll create explicitly with checkfirst=True
 complaint_category = postgresql.ENUM(
     'water', 'electricity', 'sanitation', 'roads', 'streetlights', 'other',
-    name='complaint_category', create_type=True
+    name='complaint_category', create_type=False
 )
 complaint_priority = postgresql.ENUM(
     'high', 'normal', 'low',
-    name='complaint_priority', create_type=True
+    name='complaint_priority', create_type=False
 )
 complaint_status = postgresql.ENUM(
     'open', 'in_progress', 'resolved', 'rejected',
-    name='complaint_status', create_type=True
+    name='complaint_status', create_type=False
 )
 
 
 def upgrade() -> None:
+    # Create enum types explicitly with checkfirst=True (idempotent)
     complaint_category.create(op.get_bind(), checkfirst=True)
     complaint_priority.create(op.get_bind(), checkfirst=True)
     complaint_status.create(op.get_bind(), checkfirst=True)
@@ -59,7 +61,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_index('ix_complaints_created_at', table_name='complaints')
-    op.drop_index('ix_complaints_status_priority', table_name='complaints')
+    op.drop_index('ix_complaints_status_priority', 'complaints')
     op.drop_table('complaints')
     complaint_status.drop(op.get_bind(), checkfirst=True)
     complaint_priority.drop(op.get_bind(), checkfirst=True)
