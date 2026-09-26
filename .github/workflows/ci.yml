@@ -99,6 +99,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install PostgreSQL & Redis client tools
+        run: |
+          sudo apt-get update && sudo apt-get install -y postgresql-client redis-tools
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
