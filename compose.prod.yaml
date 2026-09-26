@@ -51,7 +51,7 @@ services:
     restart: unless-stopped
 
   backend:
-    image: ${GHCR_USERNAME}/civicpulse-backend:${IMAGE_TAG:-latest}
+    image: ghcr.io/${GHCR_USERNAME}/civicpulse-backend:${IMAGE_TAG}
     container_name: civicpulse-backend
     environment:
       - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/civicpulse
@@ -79,7 +79,7 @@ services:
     restart: unless-stopped
 
   frontend:
-    image: ${GHCR_USERNAME}/civicpulse-frontend:${IMAGE_TAG:-latest}
+    image: ghcr.io/${GHCR_USERNAME}/civicpulse-frontend:${IMAGE_TAG}
     container_name: civicpulse-frontend
     networks:
       - edge
@@ -95,6 +95,8 @@ services:
           cpus: '0.25'
           memory: 128M
     restart: unless-stopped
+    ports:
+      - "80:80"
 
 networks:
   edge:
