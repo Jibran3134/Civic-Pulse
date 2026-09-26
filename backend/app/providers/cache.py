@@ -56,11 +56,12 @@ class CacheProvider:
         """Set value in cache with TTL."""
         client = await self._get_client()
         try:
-            await client.setex(key, ttl, json.dumps(value, default=str))
+            await client.set(key, json.dumps(value, default=str), ex=ttl)
             return True
         except Exception as e:
             logger.warning(f"Cache set failed for key {key}: {e}")
             return False
+
 
     async def invalidate(self, key: str) -> bool:
         """Invalidate a cache key."""
@@ -72,6 +73,43 @@ class CacheProvider:
             logger.warning(f"Cache invalidate failed for key {key}: {e}")
             return False
 
+    async def incr(self, key: str) -> int:
+        """Increment counter in cache."""
+        client = await self._get_client()
+        try:
+            return await client.incr(key)
+        except Exception as e:
+            logger.warning(f"Cache incr failed for key {key}: {e}")
+            return 0
+
+    async def lpush(self, key: str, value: Any, max_len: int = 20) -> None:
+        """Push value to list and trim to max_len."""
+        client = await self._get_client()
+        try:
+            pipe = client.pipeline()
+            pipe.lpush(key, json.dumps(value, default=str))
+            if max_len > 0:
+                pipe.ltrim(key, 0, max_len - 1)
+            await pipe.execute()
+        except Exception as e:
+            logger.warning(f"Cache lpush failed for key {key}: {e}")
+
+    async def lrange(self, key: str, start: int = 0, stop: int = -1) -> list[Any]:
+        """Get range of values from list."""
+        client = await self._get_client()
+        try:
+            raw_items = await client.lrange(key, start, stop)
+            items = []
+            for item in raw_items:
+                try:
+                    items.append(json.loads(item))
+                except Exception:
+                    items.append(item)
+            return items
+        except Exception as e:
+            logger.warning(f"Cache lrange failed for key {key}: {e}")
+            return []
+
     async def health_check(self) -> bool:
         try:
             client = await self._get_client()
@@ -80,6 +118,7 @@ class CacheProvider:
         except Exception:
             # Don't log error for expected connection issues during tests/shutdown
             return False
+
 
 
 class RateLimiterProvider:
