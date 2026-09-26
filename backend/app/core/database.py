@@ -51,11 +51,10 @@ async def get_connection() -> AsyncGenerator[psycopg.AsyncConnection, None]:
 
 
 async def health_check() -> bool:
-    try:
-        pool = await create_pool()
-        async with pool.connection() as conn:
-            await conn.execute("SELECT 1")
-        return True
-    except Exception as e:
-        logger.error(f"Database health check failed: {e}")
-        return False
+        try:
+            pool = await create_pool()
+            async with pool.connection() as conn:
+                await conn.execute("SELECT 1")
+            return True
+        except Exception:
+            return False

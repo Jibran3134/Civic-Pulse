@@ -77,8 +77,8 @@ class CacheProvider:
             client = await self._get_client()
             await client.ping()
             return True
-        except Exception as e:
-            logger.error(f"Redis health check failed: {e}")
+        except Exception:
+            # Don't log error for expected connection issues during tests/shutdown
             return False
 
 
@@ -151,6 +151,5 @@ class RateLimiterProvider:
             client = await self._get_client()
             await client.ping()
             return True
-        except Exception as e:
-            logger.error(f"Rate limiter Redis health check failed: {e}")
+        except Exception:
             return False

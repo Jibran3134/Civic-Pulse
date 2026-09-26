@@ -10,6 +10,7 @@ from app.core.config import get_settings
 from app.core.database import close_pool, create_pool
 from app.core.dependencies import get_request_id
 from app.core.logging import get_logger, request_id_var, setup_logging
+from app.providers.cache import close_redis_client
 from app.routes import complaints, health, meta, stats
 
 settings = get_settings()
@@ -37,6 +38,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     logger.info("Shutting down CivicPulse backend")
     await close_pool()
+    await close_redis_client()
 
 
 app = FastAPI(
