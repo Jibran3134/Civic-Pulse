@@ -5,7 +5,6 @@ from pydantic import BaseModel
 
 from app.core.database import health_check as db_health_check
 from app.core.logging import get_logger
-from app.providers.cache import get_redis_client
 
 logger = get_logger(__name__)
 
@@ -35,13 +34,31 @@ async def health():
 
 
 async def _redis_health_check() -> bool:
-    """Perform a fresh Redis ping to verify connectivity."""
+    """Perform a fresh one-shot Redis ping.
+
+    Creates a new connection per call so it is always bound to the
+    current event loop — the module-level _redis_client singleton can
+    become stale across pytest-asyncio function-scoped event loops.
+    """
+    import redis.asyncio as _redis
+
+    from app.core.config import get_settings as _get_settings
+
+    _settings = _get_settings()
+    client = _redis.from_url(
+        _settings.redis_url,
+        encoding="utf-8",
+        decode_responses=True,
+        socket_connect_timeout=2,
+        socket_timeout=2,
+    )
     try:
-        client = await get_redis_client()
         await client.ping()
         return True
     except Exception:
         return False
+    finally:
+        await client.aclose()
 
 
 @router.get("/ready", response_model=ReadyResponse, tags=["health"])
