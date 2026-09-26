@@ -145,12 +145,22 @@ jobs:
   test-frontend:
     name: Frontend Tests
     runs-on: ubuntu-latest
-    if: ${{ hashFiles('frontend/package.json') != '' }}
     steps:
+      - name: Check frontend exists
+        id: check
+        run: |
+          if [ -f frontend/package.json ]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Checkout
+        if: ${{ steps.check.outputs.exists == 'true' }}
         uses: actions/checkout@v4
 
       - name: Set up Node
+        if: ${{ steps.check.outputs.exists == 'true' }}
         uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -158,11 +168,13 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
 
       - name: Install frontend deps
+        if: ${{ steps.check.outputs.exists == 'true' }}
         run: |
           cd frontend
           npm ci
 
       - name: Run Vitest
+        if: ${{ steps.check.outputs.exists == 'true' }}
         run: |
           cd frontend
           npm run test -- --run --coverage
@@ -178,6 +190,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Check frontend exists
+        id: check-frontend
+        run: |
+          if [ -f frontend/package.json ]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -192,7 +213,7 @@ jobs:
 
       - name: Build frontend
         id: build-frontend
-        if: ${{ hashFiles('frontend/package.json') != '' }}
+        if: ${{ steps.check-frontend.outputs.exists == 'true' }}
         uses: docker/build-push-action@v5
         with:
           context: ./frontend
@@ -219,7 +240,7 @@ jobs:
           severity: 'HIGH,CRITICAL'
 
       - name: Run Trivy scanner (frontend)
-        if: ${{ hashFiles('frontend/package.json') != '' }}
+        if: ${{ needs.build.outputs.frontend-digest != '' }}
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: 'image'
@@ -228,21 +249,34 @@ jobs:
           exit-code: '1'
           ignore-unfixed: true
           severity: 'HIGH,CRITICAL'
+          ignore-unfixed: true
+          severity: 'HIGH,CRITICAL'
 
   manifests:
     name: Kubeconform Manifests
     runs-on: ubuntu-latest
-    if: ${{ hashFiles('k8s/overlays/prod/kustomization.yaml') != '' }}
     steps:
+      - name: Check k8s exists
+        id: check
+        run: |
+          if [ -f k8s/overlays/prod/kustomization.yaml ]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Checkout
+        if: ${{ steps.check.outputs.exists == 'true' }}
         uses: actions/checkout@v4
 
       - name: Install kustomize
+        if: ${{ steps.check.outputs.exists == 'true' }}
         run: |
           curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
           sudo mv kustomize /usr/local/bin/
 
       - name: Validate manifests
+        if: ${{ steps.check.outputs.exists == 'true' }}
         run: |
           kustomize build k8s/overlays/prod | kubeconform -strict -summary
 
