@@ -27,10 +27,11 @@ FROM python:3.12-slim AS runtime
 
 WORKDIR /app
 
-# Install runtime dependencies
+# Install runtime dependencies + upgrade setuptools to patch CVE-2025-47273
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir --upgrade "setuptools>=78.1.1"
 
 # Create non-root user
 RUN groupadd -r appuser && useradd -r -g appuser appuser
