@@ -133,7 +133,8 @@ jobs:
 
       - name: Drop and recreate test database
         run: |
-          PGPASSWORD=postgres psql -h localhost -U postgres -c "DROP DATABASE IF EXISTS civicpulse; CREATE DATABASE civicpulse;"
+          PGPASSWORD=postgres psql -h localhost -U postgres -c "DROP DATABASE IF EXISTS civicpulse;"
+          PGPASSWORD=postgres psql -h localhost -U postgres -c "CREATE DATABASE civicpulse;"
 
       - name: Run migrations
         run: |
