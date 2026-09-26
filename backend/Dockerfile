@@ -27,11 +27,10 @@ FROM python:3.12-slim AS runtime
 
 WORKDIR /app
 
-# Install runtime dependencies + upgrade setuptools to patch CVE-2025-47273
+# Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
-    && rm -rf /var/lib/apt/lists/* \
-    && pip install --no-cache-dir --upgrade "setuptools>=78.1.1"
+    && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user
 RUN groupadd -r appuser && useradd -r -g appuser appuser
@@ -39,6 +38,13 @@ RUN groupadd -r appuser && useradd -r -g appuser appuser
 # Copy installed packages from builder
 COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
+
+# Remove pip to eliminate vulnerabilities in pip's vendored packages (msgpack, setuptools)
+RUN rm -rf /usr/local/lib/python3.12/site-packages/pip \
+    /usr/local/lib/python3.12/site-packages/pip-* \
+    /usr/local/bin/pip \
+    /usr/local/bin/pip3 \
+    /usr/local/bin/pip3.12
 
 # Copy application code
 COPY --from=builder --chown=appuser:appuser /app/app ./app
