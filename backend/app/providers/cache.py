@@ -110,14 +110,14 @@ class RateLimiterProvider:
 
             if not bucket_data:
                 # First request - initialize bucket
-                await client.hset(
+                await client.hset(  # type: ignore[misc]
                     key,
                     mapping={
                         "tokens": str(settings.rate_limit_burst - 1),
                         "last_refill": "0",
                     },
                 )
-                await client.expire(key, settings.rate_limit_window_seconds)
+                await client.expire(key, settings.rate_limit_window_seconds)  # type: ignore[misc]
                 return True, 0
 
             tokens = float(bucket_data.get("tokens", settings.rate_limit_burst))
@@ -133,8 +133,8 @@ class RateLimiterProvider:
 
             if tokens >= 1:
                 tokens -= 1
-                await client.hset(key, mapping={"tokens": str(tokens), "last_refill": str(now)})
-                await client.expire(key, settings.rate_limit_window_seconds)
+                await client.hset(key, mapping={"tokens": str(tokens), "last_refill": str(now)})  # type: ignore[misc]
+                await client.expire(key, settings.rate_limit_window_seconds)  # type: ignore[misc]
                 return True, 0
 
             # Calculate retry-after
