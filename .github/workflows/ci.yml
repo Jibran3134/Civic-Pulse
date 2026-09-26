@@ -131,6 +131,10 @@ jobs:
             sleep 2
           done
 
+      - name: Drop and recreate test database
+        run: |
+          PGPASSWORD=postgres psql -h localhost -U postgres -c "DROP DATABASE IF EXISTS civicpulse; CREATE DATABASE civicpulse;"
+
       - name: Run migrations
         run: |
           cd backend
