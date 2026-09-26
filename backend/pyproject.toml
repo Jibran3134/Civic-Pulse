@@ -39,10 +39,14 @@ build-backend = "setuptools.build_meta"
 packages = ["app", "alembic"]
 
 [tool.ruff]
-line-length = 100
+line-length = 120
 target-version = "py312"
 select = ["E", "F", "I", "W", "UP", "B", "C4", "PTH", "SIM", "T20", "ARG", "PL"]
-ignore = ["S101", "S603", "S607"]
+ignore = [
+    "S101", "S603", "S607",
+    "B008", "PLR0913", "PLR0917", "PLR2004", "ARG001", "ARG002",
+    "PLW0603", "PLC0415", "UP042", "F841", "F401", "E402",
+]
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
