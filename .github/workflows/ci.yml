@@ -44,6 +44,7 @@ jobs:
             --disable-error-code=no-untyped-call
 
       - name: Set up Node
+        if: ${{ steps.check.outputs.exists == 'true' }}
         uses: actions/setup-node@v4
         with:
           node-version: "22"
