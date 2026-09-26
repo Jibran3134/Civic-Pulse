@@ -1,10 +1,10 @@
-from enum import Enum
+from enum import StrEnum
 from typing import Protocol
 
 from pydantic import BaseModel, Field
 
 
-class Category(str, Enum):
+class Category(StrEnum):
     WATER = "water"
     ELECTRICITY = "electricity"
     SANITATION = "sanitation"
@@ -13,7 +13,7 @@ class Category(str, Enum):
     OTHER = "other"
 
 
-class Priority(str, Enum):
+class Priority(StrEnum):
     HIGH = "high"
     NORMAL = "normal"
     LOW = "low"

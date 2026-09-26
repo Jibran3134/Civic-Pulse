@@ -4,8 +4,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 from app.core.config import get_settings
-from app.core.logging import setup_logging, get_logger
-
+from app.core.logging import get_logger, setup_logging
 
 setup_logging()
 logger = get_logger(__name__)

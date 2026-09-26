@@ -1,17 +1,16 @@
 import signal
-import sys
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
 
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.core.config import get_settings
-from app.core.logging import setup_logging, get_logger, request_id_var
-from app.core.database import create_pool, close_pool, health_check as db_health_check
+from app.core.database import close_pool, create_pool
 from app.core.dependencies import get_request_id
-from app.routes import complaints, health, stats, meta
+from app.core.logging import get_logger, request_id_var, setup_logging
+from app.routes import complaints, health, meta, stats
 
 settings = get_settings()
 logger = get_logger(__name__)

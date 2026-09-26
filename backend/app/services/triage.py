@@ -1,14 +1,12 @@
-import time
 import hashlib
-from typing import Optional
+import time
 
 from app.core.config import get_settings
 from app.core.dependencies import get_cache_provider
 from app.core.logging import get_logger
 from app.providers.cache import CacheProvider
+from app.providers.triage.base import TriageProvider, TriageResult
 from app.providers.triage.factory import get_triage_provider
-from app.providers.triage.base import TriageProvider, TriageResult, Category, Priority
-
 
 logger = get_logger(__name__)
 settings = get_settings()

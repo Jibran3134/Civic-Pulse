@@ -1,13 +1,10 @@
-import json
 import logging
 import sys
-import uuid
 from contextvars import ContextVar
-from typing import Any
+
 from pythonjsonlogger import jsonlogger
 
 from app.core.config import get_settings
-
 
 request_id_var: ContextVar[str] = ContextVar("request_id", default="")
 

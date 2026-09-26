@@ -1,12 +1,10 @@
 import uuid
-from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 import psycopg
 from psycopg.rows import dict_row
 
 from app.core.logging import get_logger
-
 
 logger = get_logger(__name__)
 
@@ -19,10 +17,10 @@ class ComplaintsRepository:
         self,
         text: str,
         location: str,
-        reporter_contact: Optional[str],
+        reporter_contact: str | None,
         category: str,
         priority: str,
-        ai_summary: Optional[str],
+        ai_summary: str | None,
         triaged_by: str,
         triage_latency_ms: int,
     ) -> dict[str, Any]:
@@ -50,7 +48,7 @@ class ComplaintsRepository:
             row = await cur.fetchone()
             return row
 
-    async def get_by_id(self, complaint_id: uuid.UUID) -> Optional[dict[str, Any]]:
+    async def get_by_id(self, complaint_id: uuid.UUID) -> dict[str, Any] | None:
         query = """
             SELECT id, text, location, reporter_contact, category, priority, status,
                    ai_summary, triaged_by, triage_latency_ms, created_at, updated_at
@@ -63,9 +61,9 @@ class ComplaintsRepository:
 
     async def list_complaints(
         self,
-        category: Optional[str] = None,
-        priority: Optional[str] = None,
-        status: Optional[str] = None,
+        category: str | None = None,
+        priority: str | None = None,
+        status: str | None = None,
         page: int = 1,
         page_size: int = 20,
     ) -> tuple[list[dict[str, Any]], int]:
@@ -109,7 +107,7 @@ class ComplaintsRepository:
         self,
         complaint_id: uuid.UUID,
         new_status: str,
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         query = """
             UPDATE complaints
             SET status = %s, updated_at = NOW()

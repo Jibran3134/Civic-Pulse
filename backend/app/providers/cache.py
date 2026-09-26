@@ -1,12 +1,10 @@
 import json
-import hashlib
-from typing import Any, Optional, Tuple
+from typing import Any
 
 import redis.asyncio as redis
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
-
 
 logger = get_logger(__name__)
 settings = get_settings()
@@ -42,7 +40,7 @@ class CacheProvider:
             self._client = await get_redis_client()
         return self._client
 
-    async def get(self, key: str) -> Tuple[Optional[Any], bool]:
+    async def get(self, key: str) -> tuple[Any | None, bool]:
         """Get value from cache. Returns (value, hit)."""
         client = await self._get_client()
         try:
@@ -93,7 +91,7 @@ class RateLimiterProvider:
             self._client = await get_redis_client()
         return self._client
 
-    async def check_limit(self, client_ip: str) -> Tuple[bool, int]:
+    async def check_limit(self, client_ip: str) -> tuple[bool, int]:
         """
         Token bucket rate limiter.
         Returns (allowed, retry_after_seconds).
@@ -108,7 +106,7 @@ class RateLimiterProvider:
             results = await pipe.execute()
 
             bucket_data = results[0] or {}
-            ttl = results[1]
+            results[1]
 
             if not bucket_data:
                 # First request - initialize bucket

@@ -1,13 +1,12 @@
 from fastapi import APIRouter, Depends, Response
-from pydantic import BaseModel
-from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
 from fastapi.responses import Response as FastAPIResponse
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
+from pydantic import BaseModel
 
 from app.core.database import health_check as db_health_check
-from app.providers.cache import CacheProvider
 from app.core.dependencies import get_cache_provider
 from app.core.logging import get_logger
-
+from app.providers.cache import CacheProvider
 
 logger = get_logger(__name__)
 

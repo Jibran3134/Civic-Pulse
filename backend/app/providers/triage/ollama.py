@@ -1,4 +1,5 @@
 import os
+
 import httpx
 
 from app.providers.triage.base import Category, Priority, TriageProvider, TriageResult
@@ -54,7 +55,7 @@ Respond with JSON only:
                 confidence=result.get("confidence", 0.5),
                 triaged_by="llm:ollama",
             )
-        except Exception as e:
+        except Exception:
             # Fallback to rules on any error
             from app.providers.triage.rules import RuleBasedTriage
             fallback = RuleBasedTriage()

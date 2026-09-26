@@ -1,7 +1,7 @@
-from contextlib import asynccontextmanager
-from typing import AsyncGenerator
-import sys
 import asyncio
+import sys
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 
 import psycopg
 from psycopg.rows import dict_row
@@ -9,7 +9,6 @@ from psycopg_pool import AsyncConnectionPool
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
-
 
 logger = get_logger(__name__)
 settings = get_settings()

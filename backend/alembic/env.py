@@ -1,6 +1,6 @@
-import os
 import sys
 from logging.config import fileConfig
+from pathlib import Path
 
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from alembic import context
 
 # Add the app directory to the path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 from app.core.config import get_settings
 
@@ -61,6 +61,7 @@ async def run_async_migrations() -> None:
 
 def run_migrations_online() -> None:
     import asyncio
+
     asyncio.run(run_async_migrations())
 
 

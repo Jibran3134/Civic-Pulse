@@ -1,10 +1,9 @@
-from fastapi import APIRouter, Depends, Header, Response
+from fastapi import APIRouter, Depends, Response
 
 from app.core.dependencies import get_cache_provider, get_complaints_repository
 from app.core.logging import get_logger
 from app.providers.cache import CacheProvider
 from app.repositories.complaints import ComplaintsRepository
-
 
 logger = get_logger(__name__)
 

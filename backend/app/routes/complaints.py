@@ -1,5 +1,4 @@
 import uuid
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field, field_validator
@@ -8,9 +7,8 @@ from app.core.dependencies import get_complaints_repository, get_rate_limiter, g
 from app.core.logging import get_logger
 from app.providers.cache import RateLimiterProvider
 from app.repositories.complaints import ComplaintsRepository
-from app.services.triage import TriageService
 from app.services.status_machine import VALID_TRANSITIONS, Status
-
+from app.services.triage import TriageService
 
 logger = get_logger(__name__)
 
@@ -20,7 +18,7 @@ router = APIRouter()
 class ComplaintCreate(BaseModel):
     text: str = Field(..., min_length=10, max_length=2000)
     location: str = Field(..., min_length=3, max_length=200)
-    reporter_contact: Optional[str] = Field(None, max_length=200)
+    reporter_contact: str | None = Field(None, max_length=200)
 
     @field_validator("text")
     @classmethod
@@ -39,15 +37,16 @@ class ComplaintCreate(BaseModel):
 
 from datetime import datetime
 
+
 class ComplaintResponse(BaseModel):
     id: uuid.UUID
     text: str
     location: str
-    reporter_contact: Optional[str]
+    reporter_contact: str | None
     category: str
     priority: str
     status: str
-    ai_summary: Optional[str]
+    ai_summary: str | None
     triaged_by: str
     triage_latency_ms: int
     created_at: datetime
@@ -67,7 +66,7 @@ class StatusUpdate(BaseModel):
 
 class ErrorResponse(BaseModel):
     detail: str
-    field_errors: Optional[dict[str, str]] = None
+    field_errors: dict[str, str] | None = None
 
 
 @router.post(
@@ -127,9 +126,9 @@ async def get_complaint(
 
 @router.get("/complaints", response_model=ComplaintListResponse)
 async def list_complaints(
-    category: Optional[str] = Query(None),
-    priority: Optional[str] = Query(None),
-    status: Optional[str] = Query(None),
+    category: str | None = Query(None),
+    priority: str | None = Query(None),
+    status: str | None = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     repo: ComplaintsRepository = Depends(get_complaints_repository),
@@ -149,7 +148,14 @@ async def list_complaints(
     )
 
 
-@router.patch("/complaints/{complaint_id}/status", response_model=ComplaintResponse, responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}})
+@router.patch(
+    "/complaints/{complaint_id}/status",
+    response_model=ComplaintResponse,
+    responses={
+        404: {"model": ErrorResponse},
+        409: {"model": ErrorResponse},
+    },
+)
 async def update_complaint_status(
     complaint_id: uuid.UUID,
     status_update: StatusUpdate,

@@ -1,12 +1,12 @@
-from typing import AsyncGenerator
-from fastapi import Depends, Request
+from collections.abc import AsyncGenerator
+
+from fastapi import Request
 
 from app.core.database import get_connection
 from app.core.logging import get_logger
 from app.providers.cache import CacheProvider, RateLimiterProvider
 from app.providers.triage.factory import get_triage_provider
 from app.repositories.complaints import ComplaintsRepository
-
 
 logger = get_logger(__name__)
 

@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class Status(str, Enum):
+class Status(StrEnum):
     OPEN = "open"
     IN_PROGRESS = "in_progress"
     RESOLVED = "resolved"

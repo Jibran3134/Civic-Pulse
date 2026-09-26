@@ -1,8 +1,6 @@
 import re
-from typing import Optional
 
 from app.providers.triage.base import Category, Priority, TriageProvider, TriageResult
-
 
 CATEGORY_KEYWORDS = {
     Category.WATER: [
@@ -53,7 +51,7 @@ class RuleBasedTriage(TriageProvider):
             for pri, kws in PRIORITY_KEYWORDS.items()
         }
 
-    def _classify(self, text: str, patterns: dict) -> Optional[str]:
+    def _classify(self, text: str, patterns: dict) -> str | None:
         scores = {}
         for category, pattern_list in patterns.items():
             score = sum(1 for pattern in pattern_list if pattern.search(text))
