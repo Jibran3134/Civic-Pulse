@@ -27,6 +27,8 @@ dependencies = [
     "email-validator==2.2.0",
     "greenlet>=3.0",
     "prometheus-client>=0.19",
+    # Explicit constraints for Trivy CVE fixes
+    "setuptools>=78.1.1",              # CVE-2025-47273 (CVE fix: 70.3.0 -> 78.1.1)
 ]
 
 [project.optional-dependencies]
