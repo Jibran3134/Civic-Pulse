@@ -288,21 +288,35 @@ jobs:
     env:
       GROQ_API_KEY: ""
       TRIAGE_PROVIDER: simulated
+      POSTGRES_PASSWORD: postgres
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Create .env for CI
         run: |
-          if [ -f .env.example ]; then
-            cp .env.example .env
-          else
-            echo "No .env.example found, skipping"
-          fi
+          cat > .env <<'EOF'
+          POSTGRES_PASSWORD=postgres
+          TRIAGE_PROVIDER=simulated
+          GROQ_API_KEY=
+          LOG_LEVEL=INFO
+          ENVIRONMENT=development
+          EOF
 
-      - name: Start compose stack
+      - name: Start compose stack (no ollama)
         run: |
-          docker compose up -d --build
+          docker compose up -d --build postgres redis backend
+
+      - name: Run migrations
+        run: |
+          for i in {1..20}; do
+            if docker compose exec -T backend alembic upgrade head 2>&1; then
+              echo "Migrations applied"
+              break
+            fi
+            echo "Waiting for backend to start... ($i)"
+            sleep 3
+          done
 
       - name: Wait for /ready
         run: |

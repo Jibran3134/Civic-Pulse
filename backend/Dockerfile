@@ -10,8 +10,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy source code first (needed for pip install -e .)
-COPY --chown=appuser:appuser app/ ./app/
-COPY --chown=appuser:appuser alembic/ ./alembic/
+COPY app/ ./app/
+COPY alembic/ ./alembic/
+COPY alembic.ini .
 COPY pyproject.toml .
 
 # Create non-root user
@@ -41,6 +42,8 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 # Copy application code
 COPY --from=builder --chown=appuser:appuser /app/app ./app
 COPY --from=builder --chown=appuser:appuser /app/alembic ./alembic
+COPY --from=builder --chown=appuser:appuser /app/alembic.ini ./alembic.ini
+COPY --from=builder --chown=appuser:appuser /app/pyproject.toml ./pyproject.toml
 
 # Switch to non-root user
 USER appuser
