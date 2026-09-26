@@ -112,7 +112,20 @@ jobs:
 
       - name: Wait for services
         run: |
-          sleep 10
+          for i in {1..30}; do
+            if pg_isready -h localhost -p 5432 -U postgres; then
+              echo "Postgres ready"
+              break
+            fi
+            sleep 2
+          done
+          for i in {1..30}; do
+            if redis-cli -h localhost -p 6379 ping; then
+              echo "Redis ready"
+              break
+            fi
+            sleep 2
+          done
 
       - name: Run migrations
         run: |
@@ -132,6 +145,7 @@ jobs:
   test-frontend:
     name: Frontend Tests
     runs-on: ubuntu-latest
+    if: ${{ hashFiles('frontend/package.json') != '' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -144,13 +158,11 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
 
       - name: Install frontend deps
-        if: ${{ hashFiles('frontend/package-lock.json') != '' }}
         run: |
           cd frontend
           npm ci
 
       - name: Run Vitest
-        if: ${{ hashFiles('frontend/package-lock.json') != '' }}
         run: |
           cd frontend
           npm run test -- --run --coverage
@@ -158,7 +170,7 @@ jobs:
   build:
     name: Build Images
     runs-on: ubuntu-latest
-    needs: [lint-and-type, test-backend, test-frontend]
+    needs: [lint-and-type, test-backend]
     outputs:
       backend-digest: ${{ steps.build-backend.outputs.digest }}
       frontend-digest: ${{ steps.build-frontend.outputs.digest }}
@@ -180,6 +192,7 @@ jobs:
 
       - name: Build frontend
         id: build-frontend
+        if: ${{ hashFiles('frontend/package.json') != '' }}
         uses: docker/build-push-action@v5
         with:
           context: ./frontend
@@ -195,7 +208,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Run Trivy scanner
+      - name: Run Trivy scanner (backend)
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: 'image'
@@ -206,6 +219,7 @@ jobs:
           severity: 'HIGH,CRITICAL'
 
       - name: Run Trivy scanner (frontend)
+        if: ${{ hashFiles('frontend/package.json') != '' }}
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: 'image'
@@ -218,6 +232,7 @@ jobs:
   manifests:
     name: Kubeconform Manifests
     runs-on: ubuntu-latest
+    if: ${{ hashFiles('k8s/overlays/prod/kustomization.yaml') != '' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
