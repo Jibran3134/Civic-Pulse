@@ -18,8 +18,8 @@ COPY pyproject.toml .
 # Create non-root user
 RUN groupadd -r appuser && useradd -r -g appuser appuser
 
-# Install Python dependencies
-RUN pip install --no-cache-dir --upgrade pip && \
+# Install Python dependencies (upgrade setuptools first to patch CVE-2025-47273)
+RUN pip install --no-cache-dir --upgrade "pip" "setuptools>=78.1.1" && \
     pip install --no-cache-dir -e ".[dev]"
 
 # Runtime stage

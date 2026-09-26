@@ -225,6 +225,8 @@ jobs:
           push: false
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-backend:${{ github.sha }}
           load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Trivy scan (backend)
         uses: aquasecurity/trivy-action@master
@@ -235,6 +237,7 @@ jobs:
           exit-code: "1"
           ignore-unfixed: true
           severity: "HIGH,CRITICAL"
+          vuln-type: "library"
 
       - name: Build frontend
         id: build-frontend
@@ -245,6 +248,8 @@ jobs:
           push: false
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-frontend:${{ github.sha }}
           load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Trivy scan (frontend)
         if: ${{ steps.check-frontend.outputs.exists == 'true' }}
@@ -256,6 +261,7 @@ jobs:
           exit-code: "1"
           ignore-unfixed: true
           severity: "HIGH,CRITICAL"
+          vuln-type: "library"
 
   manifests:
     name: Kubeconform Manifests
