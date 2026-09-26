@@ -1,0 +1,284 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main, dev]
+  push:
+    branches: [dev]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  lint-and-type:
+    name: Lint & Typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install backend deps
+        run: |
+          cd backend
+          pip install -e ".[dev]"
+
+      - name: Ruff lint
+        run: |
+          cd backend
+          ruff check .
+
+      - name: MyPy typecheck
+        run: |
+          cd backend
+          mypy app/
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend deps
+        if: ${{ hashFiles('frontend/package-lock.json') != '' }}
+        run: |
+          cd frontend
+          npm ci
+
+      - name: ESLint
+        if: ${{ hashFiles('frontend/package-lock.json') != '' }}
+        run: |
+          cd frontend
+          npm run lint
+
+      - name: TypeScript typecheck
+        if: ${{ hashFiles('frontend/package-lock.json') != '' }}
+        run: |
+          cd frontend
+          npx tsc --noEmit
+
+  test-backend:
+    name: Backend Tests
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/civicpulse
+      REDIS_URL: redis://localhost:6379/0
+      TRIAGE_PROVIDER: simulated
+      GROQ_API_KEY: ""
+      LOG_LEVEL: INFO
+      ENVIRONMENT: test
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: civicpulse
+        ports: [5432:5432]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports: [6379:6379]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install backend deps
+        run: |
+          cd backend
+          pip install -e ".[dev]"
+
+      - name: Wait for services
+        run: |
+          sleep 10
+
+      - name: Run migrations
+        run: |
+          cd backend
+          alembic upgrade head
+
+      - name: Run tests with coverage
+        run: |
+          cd backend
+          pytest --cov=app --cov-report=xml --cov-fail-under=65
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./backend/coverage.xml
+
+  test-frontend:
+    name: Frontend Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend deps
+        if: ${{ hashFiles('frontend/package-lock.json') != '' }}
+        run: |
+          cd frontend
+          npm ci
+
+      - name: Run Vitest
+        if: ${{ hashFiles('frontend/package-lock.json') != '' }}
+        run: |
+          cd frontend
+          npm run test -- --run --coverage
+
+  build:
+    name: Build Images
+    runs-on: ubuntu-latest
+    needs: [lint-and-type, test-backend, test-frontend]
+    outputs:
+      backend-digest: ${{ steps.build-backend.outputs.digest }}
+      frontend-digest: ${{ steps.build-frontend.outputs.digest }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build backend
+        id: build-backend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          push: false
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-backend:latest
+          load: true
+
+      - name: Build frontend
+        id: build-frontend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          push: false
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-frontend:latest
+          load: true
+
+  scan:
+    name: Trivy Scan
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Trivy scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'image'
+          scan-ref: '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-backend:latest'
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: 'HIGH,CRITICAL'
+
+      - name: Run Trivy scanner (frontend)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'image'
+          scan-ref: '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-frontend:latest'
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: 'HIGH,CRITICAL'
+
+  manifests:
+    name: Kubeconform Manifests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install kustomize
+        run: |
+          curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+          sudo mv kustomize /usr/local/bin/
+
+      - name: Validate manifests
+        run: |
+          kustomize build k8s/overlays/prod | kubeconform -strict -summary
+
+  integration:
+    name: Compose Integration Smoke
+    runs-on: ubuntu-latest
+    env:
+      GROQ_API_KEY: ""
+      TRIAGE_PROVIDER: simulated
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Start compose stack
+        run: |
+          docker compose up -d --build
+
+      - name: Wait for /ready
+        run: |
+          for i in {1..30}; do
+            if curl -sf http://localhost:8000/ready | grep -q '"status":"ready"'; then
+              echo "Backend ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Timeout waiting for /ready"
+          docker compose logs backend
+          exit 1
+
+      - name: Submit complaint
+        run: |
+          RESPONSE=$(curl -s -X POST http://localhost:8000/api/complaints \
+            -H "Content-Type: application/json" \
+            -d '{"text":"Water main burst on Mall Road since fajr water entering ground floors","location":"Mall Road, Lahore"}')
+          echo "$RESPONSE"
+          echo "$RESPONSE" | grep -q '"status":"open"'
+
+      - name: Verify complaint persisted
+        run: |
+          curl -sf http://localhost:8000/api/complaints | grep -q "Mall Road"
+
+      - name: Verify cache behavior
+        run: |
+          # First call - MISS
+          curl -sf http://localhost:8000/api/stats | grep -q "by_category"
+          # Second call - HIT
+          curl -sf http://localhost:8000/api/stats | grep -q "by_category"
+
+      - name: Tear down
+        if: always()
+        run: |
+          docker compose down -v
