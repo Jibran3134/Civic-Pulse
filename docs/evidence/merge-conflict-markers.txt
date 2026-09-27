@@ -1,0 +1,47 @@
+﻿
+  backend\app\core\config.py:66:    rate_limit_requests: int = Field(default=10, 
+validation_alias="RATE_LIMIT_REQUESTS")
+  backend\app\core\config.py:67:    rate_limit_window_seconds: int = Field(default=60, 
+validation_alias="RATE_LIMIT_WINDOW")
+  backend\app\core\config.py:68:    rate_limit_burst: int = Field(default=5, validation_alias="RATE_LIMIT_BURST")
+  backend\app\core\config.py:69:
+  backend\app\core\config.py:70:    stats_cache_ttl_seconds: int = Field(default=30, 
+validation_alias="STATS_CACHE_TTL")
+  backend\app\core\config.py:71:
+> backend\app\core\config.py:72:<<<<<<< HEAD
+  backend\app\core\config.py:73:    # ---------------------------------------------------------------------------
+  backend\app\core\config.py:74:    # Triage provider configuration (§2.5 items 2-3-5)
+  backend\app\core\config.py:75:    # Both LLMTriage (Groq) and OllamaTriage read these so the values cannot
+  backend\app\core\config.py:76:    # drift apart.  TRIAGE_TIMEOUT is hard-capped at 10 s by the assignment
+  backend\app\core\config.py:77:    # spec; TRIAGE_MAX_RETRIES must be >= 0.
+  backend\app\core\config.py:78:    # ---------------------------------------------------------------------------
+  backend\app\core\config.py:100:    )
+  backend\app\core\config.py:101:    triage_cache_ttl_hours: int = Field(
+  backend\app\core\config.py:102:        default=24,
+  backend\app\core\config.py:103:        validation_alias="TRIAGE_CACHE_TTL_HOURS",
+  backend\app\core\config.py:104:    )
+  backend\app\core\config.py:105:
+> backend\app\core\config.py:106:=======
+  backend\app\core\config.py:107:    # Rate limiter operational switches. The limiter moves to an atomic Redis
+  backend\app\core\config.py:108:    # Lua script so that concurrent requests cannot each read the same token
+  backend\app\core\config.py:109:    # count and all be admitted; that makes the limiter's behaviour under
+  backend\app\core\config.py:110:    # concurrency testable, which is why it needs to be switchable at all.
+  backend\app\core\config.py:111:    rate_limit_enabled: bool = Field(default=True, 
+validation_alias="RATE_LIMIT_ENABLED")
+  backend\app\core\config.py:112:    # Fail closed (reject) when Redis is unreachable. Failing open means a Redis
+  backend\app\core\config.py:120:    @classmethod
+  backend\app\core\config.py:121:    def _positive(cls, value: int) -> int:
+  backend\app\core\config.py:122:        if value <= 0:
+  backend\app\core\config.py:123:            raise ValueError("rate limit values must be positive")
+  backend\app\core\config.py:124:        return value
+  backend\app\core\config.py:125:
+> backend\app\core\config.py:126:>>>>>>> origin/feat/atomic-rate-limiter
+  backend\app\core\config.py:127:    @property
+  backend\app\core\config.py:128:    def cors_origins(self) -> list[str]:
+  backend\app\core\config.py:129:        return [origin.strip() for origin in self.cors_origins_raw.split(",") if 
+origin.strip()]
+  backend\app\core\config.py:130:
+  backend\app\core\config.py:131:    @property
+  backend\app\core\config.py:132:    def is_production(self) -> bool:
+
+
