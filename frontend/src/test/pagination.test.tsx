@@ -20,7 +20,7 @@ vi.mock('../api/client', () => ({
 }))
 
 describe('DashboardView Pagination', () => {
-  it('advances page and queries API with updated page parameter', async () => {
+  it('advances page and queries API with updated page parameter and page_size <= 100', async () => {
     vi.mocked(api.getComplaints).mockResolvedValue({
       items: [
         {
@@ -30,7 +30,7 @@ describe('DashboardView Pagination', () => {
           reporter_contact: null,
           category: 'electricity',
           priority: 'high',
-          status: 'new',
+          status: 'open',    // correct backend enum: open (not 'new')
           ai_summary: 'Power failure',
           triaged_by: 'simulated',
           triage_latency_ms: 100,
@@ -62,11 +62,16 @@ describe('DashboardView Pagination', () => {
     fireEvent.click(nextBtn)
 
     await waitFor(() => {
+      // Assert page increments AND page_size is <= 100 (API contract enforcement)
       expect(api.getComplaints).toHaveBeenCalledWith(
         expect.objectContaining({
           page: 2,
+          page_size: expect.any(Number),
         })
       )
+      // Verify page_size constraint is respected
+      const lastCall = vi.mocked(api.getComplaints).mock.calls.at(-1)?.[0]
+      expect(lastCall?.page_size).toBeLessThanOrEqual(100)
     })
   })
 })
