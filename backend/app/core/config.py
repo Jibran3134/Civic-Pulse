@@ -1,7 +1,25 @@
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Every name providers/triage/factory.py knows how to build. The factory ends
+# with a catch-all that returns SimulatedTriage for any unrecognised string, so
+# without validation a typo such as TRIAGE_PROVIDER=grq runs the stub in
+# production while the logs look healthy. This must be a module constant, not a
+# class attribute: pydantic turns annotated class attributes into fields, and a
+# field is not readable off the class.
+TRIAGE_PROVIDERS: frozenset[str] = frozenset(
+    {
+        "simulated",
+        "rules",
+        "llm",
+        "llm:groq",
+        "groq",
+        "ollama",
+        "llm:ollama",
+    }
+)
 
 
 class Settings(BaseSettings):
@@ -27,6 +45,17 @@ class Settings(BaseSettings):
 
     groq_api_key: str = Field(default="", validation_alias="GROQ_API_KEY")
     triage_provider: str = Field(default="simulated", validation_alias="TRIAGE_PROVIDER")
+
+    @field_validator("triage_provider")
+    @classmethod
+    def _check_triage_provider(cls, value: str) -> str:
+        normalised = value.strip().lower()
+        if normalised not in TRIAGE_PROVIDERS:
+            raise ValueError(
+                f"TRIAGE_PROVIDER={value!r} is not a known provider. "
+                f"Valid values: {', '.join(sorted(TRIAGE_PROVIDERS))}"
+            )
+        return normalised
 
     # Comma-separated. Empty by default: the production topology is same-origin
     # (nginx serves the frontend and proxies /api), so the safe baseline is to
@@ -72,6 +101,25 @@ class Settings(BaseSettings):
         default=24,
         validation_alias="TRIAGE_CACHE_TTL_HOURS",
     )
+
+    # Rate limiter operational switches. The limiter moves to an atomic Redis
+    # Lua script so that concurrent requests cannot each read the same token
+    # count and all be admitted; that makes the limiter's behaviour under
+    # concurrency testable, which is why it needs to be switchable at all.
+    rate_limit_enabled: bool = Field(default=True, validation_alias="RATE_LIMIT_ENABLED")
+    # Fail closed (reject) when Redis is unreachable. Failing open means a Redis
+    # outage silently disables the limiter, which is the wrong default for a
+    # public write endpoint.
+    rate_limit_fail_closed: bool = Field(
+        default=False, validation_alias="RATE_LIMIT_FAIL_CLOSED"
+    )
+
+    @field_validator("rate_limit_requests", "rate_limit_burst", "rate_limit_window_seconds")
+    @classmethod
+    def _positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("rate limit values must be positive")
+        return value
 
     @property
     def cors_origins(self) -> list[str]:
