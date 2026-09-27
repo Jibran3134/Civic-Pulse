@@ -129,8 +129,8 @@ export const StatsView: React.FC = () => {
                 <Flame size={24} color="#ef4444" />
               </div>
               <div className="metric-info">
-                <span className="metric-label">Critical Urgency</span>
-                <span className="metric-value">{stats?.by_priority['critical'] || 0}</span>
+                <span className="metric-label">High Priority</span>
+                <span className="metric-value">{stats?.by_priority['high'] || 0}</span>
               </div>
             </div>
 
@@ -187,7 +187,7 @@ export const StatsView: React.FC = () => {
               </h3>
               <div className="breakdown-list">
                 {stats &&
-                  ['critical', 'high', 'medium', 'low'].map((priority) => {
+                  (['high', 'normal', 'low'] as const).map((priority) => {
                     const count = stats.by_priority[priority] || 0
                     const percentage = totalComplaints > 0 ? (count / totalComplaints) * 100 : 0
                     return (
