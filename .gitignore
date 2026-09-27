@@ -107,6 +107,11 @@ temp/
 *.tmp
 *.temp
 
+# Local reference assignment documents
+*.pdf
+*.docx
+
+
 # Backup files
 *.bak
 *.backup

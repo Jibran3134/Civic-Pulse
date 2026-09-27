@@ -74,10 +74,26 @@ class RuleBasedTriage(TriageProvider):
         if len(summary) > 140:
             summary = summary[:137] + "..."
 
+        # Determine confidence from keyword match density
+        # 0.9 if >=3 keyword matches, 0.6 for 1-2 matches, 0.3 for default/unmatched
+        category_matches = sum(
+            1 for patterns in self._category_patterns.values() for p in patterns if p.search(full_text)
+        )
+        priority_matches = sum(
+            1 for patterns in self._priority_patterns.values() for p in patterns if p.search(full_text)
+        )
+        total_matches = category_matches + priority_matches
+
+        if total_matches >= 3:
+            confidence = 0.9
+        elif total_matches >= 1:
+            confidence = 0.6
+        else:
+            confidence = 0.3
+
         return TriageResult(
             category=category,
             priority=priority,
             summary=summary,
-            confidence=0.7,
-            triaged_by="rules",
+            confidence=confidence,
         )

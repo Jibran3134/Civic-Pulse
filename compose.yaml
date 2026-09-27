@@ -109,6 +109,27 @@ services:
     ports:
       - "8000:8000"
 
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: civicpulse-frontend
+    networks:
+      - edge
+    depends_on:
+      - backend
+    ports:
+      - "3000:80"
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+    restart: unless-stopped
+
 networks:
   edge:
     driver: bridge
