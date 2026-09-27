@@ -34,7 +34,6 @@ def setup_logging() -> None:
 
     formatter = CustomJsonFormatter(
         "%(timestamp)s %(level)s %(name)s %(message)s",
-        rename_fields={"levelname": "level"},
     )
     handler.setFormatter(formatter)
     handler.addFilter(RequestIdFilter())
