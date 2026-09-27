@@ -54,7 +54,7 @@ describe('SubmitView Honest Loading State', () => {
       reporter_contact: null,
       category: 'water',
       priority: 'high',
-      status: 'new',
+      status: 'open',
       ai_summary: 'Major water pipeline rupture causing neighborhood flooding',
       triaged_by: 'simulated',
       triage_latency_ms: 320,
