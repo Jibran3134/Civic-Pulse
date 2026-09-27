@@ -5,6 +5,10 @@ on:
     tags:
       - 'v*'
 
+# Least privilege default; the job that creates the release widens it explicitly.
+permissions:
+  contents: read
+
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
@@ -23,6 +27,17 @@ jobs:
       - name: Extract version from tag
         id: version
         run: echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      # There is no frontend/ directory yet; without this guard the release run
+      # dies on a missing Docker build context.
+      - name: Check frontend exists
+        id: check-frontend
+        run: |
+          if [ -f frontend/package.json ]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -44,6 +59,7 @@ jobs:
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-backend:latest
 
       - name: Build & push frontend
+        if: ${{ steps.check-frontend.outputs.exists == 'true' }}
         uses: docker/build-push-action@v5
         with:
           context: ./frontend
@@ -51,6 +67,11 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-frontend:${{ steps.version.outputs.version }}
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-frontend:latest
+
+      - name: Report skipped frontend image
+        if: ${{ steps.check-frontend.outputs.exists != 'true' }}
+        run: |
+          echo "::notice title=Frontend image SKIPPED::frontend/ is not in the tree, so no frontend image was published for ${{ steps.version.outputs.version }}."
 
   generate-release-notes:
     name: Generate Release Notes
@@ -69,16 +90,45 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
+            // listReleases() rejects with 404 (not an empty array) when the repo
+            // has never published a release, so the very first `v*` tag used to
+            // fail here. Treat "no previous release" as "start from the beginning".
+            let since = '2024-01-01T00:00:00Z';
+            try {
+              const { data: releases } = await github.rest.repos.listReleases({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                per_page: 1,
+              });
+              if (releases && releases.length > 0 && releases[0].published_at) {
+                since = releases[0].published_at;
+                console.log(`Previous release: ${releases[0].tag_name} @ ${since}`);
+              } else {
+                console.log('No previous release found - listing all commits.');
+              }
+            } catch (error) {
+              if (error.status === 404) {
+                console.log('No releases yet (404) - listing all commits.');
+              } else {
+                throw error;
+              }
+            }
+
             const { data: commits } = await github.rest.repos.listCommits({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              since: (await github.rest.repos.listReleases({...context.repo, per_page: 1})).data[0]?.published_at || '2024-01-01',
+              since,
+              per_page: 100,
             });
-            const notes = commits.map(c => `- ${c.commit.message.split('\n')[0]}`).join('\n');
-            return notes;
 
+            if (commits.length === 0) {
+              return `Release ${context.ref.replace('refs/tags/', '')}: no new commits since the previous release.`;
+            }
+            return commits.map(c => `- ${c.commit.message.split('\n')[0]}`).join('\n');
+
+      # Pinned to an immutable tag: @v1 is a floating major ref.
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2.2.2
         with:
           tag_name: ${{ github.ref_name }}
           name: Release ${{ github.ref_name }}

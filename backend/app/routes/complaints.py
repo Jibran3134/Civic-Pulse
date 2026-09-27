@@ -3,9 +3,9 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field, field_validator
 
-from app.core.dependencies import get_complaints_repository, get_rate_limiter, get_request_id
+from app.core.dependencies import get_cache_provider, get_complaints_repository, get_rate_limiter, get_request_id
 from app.core.logging import get_logger
-from app.providers.cache import RateLimiterProvider
+from app.providers.cache import CacheProvider, RateLimiterProvider
 from app.repositories.complaints import ComplaintsRepository
 from app.services.status_machine import VALID_TRANSITIONS, Status
 from app.services.triage import TriageService
@@ -13,6 +13,11 @@ from app.services.triage import TriageService
 logger = get_logger(__name__)
 
 router = APIRouter()
+
+# Shared by the writer and the reader of the stats cache. Both sides must
+# agree on this string: the cache is only invalidated correctly if the key
+# written in stats.py is the key deleted here.
+STATS_CACHE_KEY = "stats:aggregates"
 
 
 class ComplaintCreate(BaseModel):
@@ -84,16 +89,23 @@ async def create_complaint(
     response: Response,
     repo: ComplaintsRepository = Depends(get_complaints_repository),
     rate_limiter: RateLimiterProvider = Depends(get_rate_limiter),
+    cache: CacheProvider = Depends(get_cache_provider),
     request_id: str = Depends(get_request_id),
 ):
     client_ip = request.client.host if request.client else "unknown"
     allowed, retry_after = await rate_limiter.check_limit(client_ip)
 
     if not allowed:
-        response.headers["Retry-After"] = str(retry_after)
+        # The header MUST be attached to the exception, not to the injected
+        # `response`. Raising HTTPException makes FastAPI build a fresh
+        # JSONResponse from the exception and discard anything already set on
+        # `response`, so setting it there produced a 429 with no Retry-After at
+        # all -- and a client that respects Retry-After had no way to know when
+        # it was safe to try again.
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Rate limit exceeded",
+            detail=f"Rate limit exceeded. Retry after {retry_after} seconds.",
+            headers={"Retry-After": str(retry_after)},
         )
 
     triage_service = TriageService()
@@ -109,6 +121,16 @@ async def create_complaint(
         triaged_by=triage_result.triaged_by,
         triage_latency_ms=triage_result.triage_latency_ms,
     )
+
+    # Drop the cached aggregates on every write.
+    #
+    # TTL alone is not enough. The 30s TTL bounds how stale the stats can get
+    # if an invalidation is ever lost, but without an explicit delete here a
+    # complaint an operator has just submitted is invisible on the dashboard
+    # for up to 30 seconds -- which is exactly the window in which somebody
+    # would submit a duplicate report. The CI integration job asserts this:
+    # POST a complaint, and the next /api/stats MUST report X-Cache: MISS.
+    await cache.invalidate(STATS_CACHE_KEY)
 
     return ComplaintResponse(**created)
 
