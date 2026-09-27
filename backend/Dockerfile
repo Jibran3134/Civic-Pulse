@@ -1,5 +1,5 @@
 # Build stage
-FROM python:3.12-slim AS builder
+FROM python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f AS builder
 
 WORKDIR /app
 
@@ -44,7 +44,7 @@ COPY alembic.ini .
 RUN groupadd -r appuser && useradd -r -g appuser appuser
 
 # Runtime stage
-FROM python:3.12-slim AS runtime
+FROM python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f AS runtime
 
 WORKDIR /app
 
