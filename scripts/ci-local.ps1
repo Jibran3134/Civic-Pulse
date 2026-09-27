@@ -9,9 +9,19 @@
     the same pass/fail conditions, so "green locally" means something.
 
     Written in PowerShell rather than bash on purpose: `bash` on this machine
-    is WSL2, which has no access to the Windows Python toolchain, Docker CLI
-    paths, or the Python virtualenv the checks actually run against. A bash
-    runner here would be testing a different machine than CI does.
+    is WSL2, which cannot see the Windows Python toolchain, the Docker CLI
+    paths, or the environment the checks actually run against. A bash runner
+    here would be testing a different machine than CI does.
+
+    What it does NOT reproduce, stated plainly:
+      * buildx / GHA layer cache, and the codecov upload.
+      * The exact trivy scanner version. The action is pinned to v0.28.0; the
+        CLI here is newer, so a clean run means "no NEW HIGH/CRITICAL library
+        CVEs", not a byte-for-byte match.
+      * The Windows event-loop workaround in the migrations step. ci.yml runs
+        on Linux where `alembic upgrade head` works unmodified; on Windows it
+        needs the Selector policy, so this script sets it explicitly rather
+        than letting the check silently pass for the wrong reason.
 
 .EXAMPLE
     pwsh -File scripts/ci-local.ps1
@@ -38,28 +48,29 @@ function Fail {
     Write-Host "  FAIL  $m" -ForegroundColor Red
 }
 
-# Invoke a command, stream its output, and record pass/fail. Returns $true on
-# success. Output is captured so a failure shows the reason inline rather than
-# only at the end of the job.
+# Run a command, echo its output indented, and record pass/fail. The boolean
+# return is consumed with `| Out-Null` or `$null =` where nothing branches on
+# it, so it does not leak into the log.
 function Invoke-Check {
-    param([string]$Name, [scriptblock]$Body, [switch]$Quiet)
+    param([string]$Name, [scriptblock]$Body)
     $out = & $Body 2>&1
     $code = $LASTEXITCODE
-    if (-not $Quiet) { $out | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray } }
-    if ($code -eq 0) { Pass $Name; return $true } else { Fail "$Name (exit $code)"; return $false }
+    $out | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+    if ($code -eq 0) { Pass $Name; return $true }
+    Fail "$Name (exit $code)"
+    return $false
 }
 
 # ---------------------------------------------------------------- lint-and-type
 function Invoke-Lint {
     Step 'lint-and-type / ruff'
     Push-Location backend
-    $null = Invoke-Check 'ruff' { python -m ruff check . } | Out-Null
+    Invoke-Check 'ruff' { python -m ruff check . } | Out-Null
     Pop-Location
 
     Step 'lint-and-type / mypy (CI flags)'
     # Flags copied verbatim from ci.yml. It disables several error codes, so a
-    # bare `mypy` locally reports failures that CI would not -- and, more
-    # importantly, would hide nothing CI does check.
+    # bare `mypy` locally reports failures CI would not.
     Push-Location backend
     $null = Invoke-Check 'mypy' {
         python -m mypy app/ --ignore-missing-imports --no-strict-optional `
@@ -82,27 +93,40 @@ function Invoke-Frontend {
     if (-not (Invoke-Check 'npm ci' { npm ci --no-audit --no-fund })) { Pop-Location; return }
 
     Step 'lint-and-type / eslint'
-    $null = $null = Invoke-Check 'eslint' { npm run lint }
+    $null = Invoke-Check 'eslint' { npm run lint }
 
     Step 'lint-and-type / tsc --noEmit'
-    $null = $null = Invoke-Check 'tsc' { npx tsc --noEmit }
+    $null = Invoke-Check 'tsc' { npx tsc --noEmit }
 
     Step 'test-frontend / vitest'
-    $null = $null = Invoke-Check 'vitest' { npm run test -- --run }
+    $null = Invoke-Check 'vitest' { npm run test -- --run }
     Pop-Location
 }
 
 # ------------------------------------------------------------------ test-backend
 function Start-CiServices {
-    docker rm -f ci-local-pg ci-local-redis 2>&1 | Out-Null
+    # Reclaim the ports first. An aborted run leaves containers behind, then
+    # `docker run` fails with "port is already allocated" and the health loop
+    # times out reporting a "services up" failure that has nothing to do with
+    # services.
+    foreach ($c in @('ci-local-pg', 'ci-local-redis', 'cp-test-pg', 'cp-test-redis')) {
+        docker rm -f $c 2>&1 | Out-Null
+    }
     docker run -d --name ci-local-pg -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres `
         -e POSTGRES_DB=civicpulse -p 55432:5432 postgres:16-alpine 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { Write-Host '    could not start postgres on 55432' -ForegroundColor Red; return $false }
     docker run -d --name ci-local-redis -p 56379:6379 redis:7-alpine 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { Write-Host '    could not start redis on 56379' -ForegroundColor Red; return $false }
+
     for ($i = 0; $i -lt 30; $i++) {
         docker exec ci-local-pg pg_isready -U postgres 2>&1 | Out-Null
-        if ($LASTEXITCODE -eq 0) { docker exec ci-local-redis redis-cli ping 2>&1 | Out-Null; if ($LASTEXITCODE -eq 0) { return $true } }
+        $pg = $LASTEXITCODE
+        docker exec ci-local-redis redis-cli ping 2>&1 | Out-Null
+        $rd = $LASTEXITCODE
+        if ($pg -eq 0 -and $rd -eq 0) { return $true }
         Start-Sleep -Seconds 2
     }
+    Write-Host '    timed out waiting for postgres/redis' -ForegroundColor Red
     return $false
 }
 function Stop-CiServices { docker rm -f ci-local-pg ci-local-redis 2>&1 | Out-Null }
@@ -119,12 +143,8 @@ function Invoke-Test {
     $env:ENVIRONMENT = 'test'
 
     Step 'test-backend / migrations'
-    # `alembic upgrade head` fails on Windows because the Selector event-loop
-    # policy is only applied as an import side effect of app.core.database.
-    # Setting it here keeps this script from being a false signal that the
-    # portability bug is fixed -- it is not, and ci.yml does not exercise it.
     Push-Location backend
-    $null = $null = Invoke-Check 'migrations' {
+    $null = Invoke-Check 'migrations' {
         $env:PYTHONPATH = (Get-Location).Path
         python -c @"
 import asyncio
@@ -135,7 +155,7 @@ command.upgrade(Config('alembic.ini'), 'head')
 "@
     }
     Step 'test-backend / pytest --cov-fail-under=65'
-    $null = $null = Invoke-Check 'pytest' { python -m pytest --cov=app --cov-report=term-missing --cov-fail-under=65 -q }
+    $null = Invoke-Check 'pytest' { python -m pytest --cov=app --cov-report=term-missing --cov-fail-under=65 -q }
     Pop-Location
 }
 
@@ -146,12 +166,9 @@ function Invoke-Build {
 
     if (Test-Path 'frontend/package.json') {
         Step 'build / frontend image'
-        $null = Invoke-Check 'build frontend' { docker build -q -t ci-local/frontend:test ./frontend } | Out-Null
+        $null = Invoke-Check 'build frontend' { docker build -q -t ci-local/frontend:test ./frontend }
     }
 
-    # Equivalent of the trivy-action steps. The action is pinned to v0.28.0,
-    # whose bundled scanner is older than the CLI available here, so read this
-    # as "no NEW HIGH/CRITICAL library CVEs", not a byte-for-byte reproduction.
     $trivy = $TrivyBin
     if (-not $trivy) { $trivy = (Get-Command trivy -ErrorAction SilentlyContinue).Source }
     if (-not $trivy) { $trivy = Join-Path $script:Root '.ci-tools/trivy.exe' }
@@ -166,7 +183,7 @@ function Invoke-Build {
     if (Test-Path 'frontend/package.json') { $images += 'ci-local/frontend:test' }
     foreach ($img in $images) {
         Step "scan / trivy HIGH,CRITICAL (library) -- $img"
-        Invoke-Check "trivy $img" {
+        $null = Invoke-Check "trivy $img" {
             & $trivy image --exit-code 1 --severity HIGH,CRITICAL --vuln-type library `
                 --ignore-unfixed --quiet --scanners vuln $img
         }
@@ -189,18 +206,21 @@ function Invoke-Manifests {
     if (-not (Test-Path $kubeconform)) { Fail 'kubeconform not found'; return }
 
     $dir = Join-Path $env:TEMP "ci-manifests-$([guid]::NewGuid().ToString('N').Substring(0,8))"
-    New-Item -ItemType Directory $dir | Out-Null
+    $split = Join-Path $dir 'docs'
+    New-Item -ItemType Directory $split -Force | Out-Null
     $rendered = Join-Path $dir 'all.yaml'
     & $kustomize build k8s/overlays/prod 2>$null | Set-Content $rendered
     if ($LASTEXITCODE -ne 0) { Fail 'kustomize build'; Remove-Item $dir -Recurse -Force; return }
 
-    # Split the multi-document stream: kubeconform needs one resource per file.
+    # Split the multi-document stream into the `docs` subdirectory only.
+    # Writing them alongside all.yaml would make kubeconform validate the
+    # concatenated file as well and double-count every resource.
     $i = 0
     foreach ($doc in ((Get-Content $rendered -Raw) -split "(?m)^---\s*$")) {
-        if ($doc.Trim()) { $i++; Set-Content (Join-Path $dir ("doc-{0:d2}.yaml" -f $i)) $doc.Trim() }
+        if ($doc.Trim()) { $i++; Set-Content (Join-Path $split ("doc-{0:d2}.yaml" -f $i)) $doc.Trim() }
     }
     Write-Host "    rendered $i resources"
-    $null = $null = Invoke-Check 'kubeconform' { & $kubeconform -strict -summary -ignore-missing-schemas $dir }
+    $null = Invoke-Check 'kubeconform' { & $kubeconform -strict -summary -ignore-missing-schemas $split }
     Remove-Item $dir -Recurse -Force
 }
 
@@ -268,14 +288,30 @@ ENVIRONMENT=development
     }
 
     Step 'integration / complaint persisted'
-    $list = Invoke-RestMethod 'http://localhost:8000/api/complaints'
-    if (($list.items | Where-Object { $_.location -like '*Mall Road*' }).Count -gt 0) { Pass 'persisted' } else { Fail 'persisted' }
+    # Mirror CI's `curl ... | grep -q "Mall Road"` rather than reimplementing it
+    # with object property access: the point is that the row is readable back
+    # through the API, and a raw-body match cannot silently pass on a null.
+    $raw = curl.exe -s http://localhost:8000/api/complaints
+    if (($raw -join "`n") -match 'Mall Road') { Pass 'persisted' } else { Fail 'persisted' }
 
-    # Helper: fetch /api/stats and return the raw X-Cache header value.
+    # The X-Cache response HEADER is the only thing that distinguishes a HIT
+    # from a MISS -- the body is byte-identical either way.
     function Get-XCache {
         $h = curl.exe -s -D - -o NUL http://localhost:8000/api/stats
         $line = ($h | Select-String -Pattern '^x-cache:' | Select-Object -First 1)
         if ($line) { return ($line.Line -split ':', 2)[1].Trim() } else { return '<absent>' }
+    }
+    # POST a JSON body. Must go through Invoke-RestMethod, NOT curl --data-raw:
+    # PowerShell strips the embedded double quotes when shelling out to a native
+    # executable, so curl receives malformed JSON and the API correctly answers
+    # 422. ci.yml uses curl inside a bash `run:` block where the quoting is
+    # intact, so this divergence was in the local runner only.
+    function Post-Complaint {
+        param([string]$Body)
+        try {
+            return Invoke-RestMethod 'http://localhost:8000/api/complaints' `
+                -Method Post -ContentType 'application/json' -Body $Body
+        } catch { return $null }
     }
 
     Step 'integration / X-Cache MISS then HIT'
@@ -286,9 +322,9 @@ ENVIRONMENT=development
 
     Step 'integration / cache invalidation on write'
     $body2 = '{"text":"Garbage not collected for three days in Model Town block B","location":"Model Town, Lahore"}'
-    $code = curl.exe -s -o NUL -w '%{http_code}' -X POST http://localhost:8000/api/complaints `
-        -H 'Content-Type: application/json' --data-raw $body2
-    Write-Host "    POST status: $code" -ForegroundColor DarkGray
+    $w = Post-Complaint $body2
+    if (-not $w) { Fail 'write before invalidation check' }
+    else { Write-Host "    POST status: 201 (triaged_by=$($w.triaged_by))" -ForegroundColor DarkGray }
     $c3 = Get-XCache
     $c4 = Get-XCache
     Write-Host "    after POST=$c3  next call=$c4" -ForegroundColor DarkGray
