@@ -1,20 +1,20 @@
 from fastapi import APIRouter, Response
-from fastapi.responses import Response as FastAPIResponse
-from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
+from fastapi.responses import Response as PrometheusResponse
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel
 
 from app.core.database import health_check as db_health_check
 from app.core.logging import get_logger
+from app.providers.cache import redis_health_check
 
 logger = get_logger(__name__)
 
 router = APIRouter()
 
-# Prometheus metrics
-REQUEST_COUNT = Counter("http_requests_total", "Total HTTP requests", ["method", "endpoint", "status"])
-REQUEST_LATENCY = Histogram("http_request_duration_seconds", "HTTP request latency", ["method", "endpoint"])
-TRIAGE_LATENCY = Histogram("triage_duration_seconds", "Triage latency")
-FALLBACK_COUNTER = Counter("triage_fallback_total", "Total triage fallbacks")
+# The counters themselves live in app/core/metrics.py. Declaring them here and
+# in the middleware would either duplicate the series (Prometheus rejects a
+# second registration of the same name) or leave one half uninitialised. The
+# middleware in main.py increments them; this module only serves the scrape.
 
 
 class HealthResponse(BaseModel):
@@ -29,43 +29,26 @@ class ReadyResponse(BaseModel):
 
 @router.get("/health", response_model=HealthResponse, tags=["health"])
 async def health():
-    """Liveness probe - process is alive, does not touch database."""
-    return HealthResponse()
+    """Liveness probe.
 
-
-async def _redis_health_check() -> bool:
-    """Perform a fresh one-shot Redis ping.
-
-    Creates a new connection per call so it is always bound to the
-    current event loop — the module-level _redis_client singleton can
-    become stale across pytest-asyncio function-scoped event loops.
+    Deliberately touches nothing but the process itself. Kubernetes restarts
+    the pod when this fails, so making it depend on Postgres would turn a slow
+    database into a restart loop across the whole deployment.
     """
-    import redis.asyncio as _redis
-
-    from app.core.config import get_settings as _get_settings
-
-    _settings = _get_settings()
-    client = _redis.from_url(
-        _settings.redis_url,
-        encoding="utf-8",
-        decode_responses=True,
-        socket_connect_timeout=2,
-        socket_timeout=2,
-    )
-    try:
-        await client.ping()
-        return True
-    except Exception:
-        return False
-    finally:
-        await client.aclose()
+    return HealthResponse()
 
 
 @router.get("/ready", response_model=ReadyResponse, tags=["health"])
 async def ready(response: Response):
-    """Readiness probe - 200 only if Postgres and Redis are reachable."""
+    """Readiness probe.
+
+    Readiness is the opposite decision: a failure here removes the pod from the
+    Service endpoints so no new traffic arrives, but does NOT restart the pod.
+    So this one must check the dependencies the pod actually needs to serve a
+    request -- Postgres and Redis -- and name whichever failed.
+    """
     db_ok = await db_health_check()
-    redis_ok = await _redis_health_check()
+    redis_ok = await redis_health_check()
 
     if not db_ok or not redis_ok:
         response.status_code = 503
@@ -80,5 +63,5 @@ async def ready(response: Response):
 
 @router.get("/metrics", tags=["metrics"])
 async def metrics():
-    """Prometheus metrics endpoint."""
-    return FastAPIResponse(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+    """Prometheus scrape endpoint (the Grafana dashboard bonus builds on this)."""
+    return PrometheusResponse(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)

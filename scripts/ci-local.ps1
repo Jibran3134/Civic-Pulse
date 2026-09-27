@@ -344,7 +344,14 @@ foreach ($job in $Jobs) {
         'build' { Invoke-Build }
         'manifests' { Invoke-Manifests }
         'integration' { Invoke-Integration }
-        default { Write-Host "unknown job: $job" -ForegroundColor Yellow }
+        default {
+            # An unrecognised job must FAIL, not pass. Treating it as a no-op
+            # means a typo such as -Jobs test,integration reports "All checks
+            # passed" having run nothing, which is exactly the false green this
+            # script exists to prevent.
+            Write-Host "unknown job: $job (known: lint, frontend, test, build, manifests, integration)" -ForegroundColor Red
+            Fail "unknown job: $job"
+        }
     }
 }
 
