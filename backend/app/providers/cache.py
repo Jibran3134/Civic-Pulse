@@ -27,8 +27,33 @@ async def get_redis_client() -> redis.Redis:
 async def close_redis_client() -> None:
     global _redis_client
     if _redis_client is not None:
-        await _redis_client.close()
+        await _redis_client.aclose()
         _redis_client = None
+
+
+async def redis_health_check() -> bool:
+    """Fresh, one-shot Redis PING for the readiness probe.
+
+    Deliberately does NOT reuse the module-level singleton. That client is bound
+    to the event loop that first opened it, so under pytest-asyncio's
+    function-scoped loops a cached client can be stale and report a false
+    negative. A short-lived client costs one TCP handshake on a probe that runs
+    every few seconds, which is a good trade for an honest answer.
+    """
+    client = redis.from_url(
+        settings.redis_url,
+        encoding="utf-8",
+        decode_responses=True,
+        socket_connect_timeout=2,
+        socket_timeout=2,
+    )
+    try:
+        await client.ping()
+        return True
+    except Exception:
+        return False
+    finally:
+        await client.aclose()
 
 
 class CacheProvider:

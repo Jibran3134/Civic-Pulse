@@ -46,6 +46,11 @@ class ComplaintsRepository:
                 ),
             )
             row = await cur.fetchone()
+            if row is None:
+                # INSERT ... RETURNING always yields a row unless a BEFORE
+                # trigger suppressed it. Failing loudly beats handing None to a
+                # Pydantic model and getting a confusing 500.
+                raise RuntimeError("complaints INSERT returned no row")
             return row
 
     async def get_by_id(self, complaint_id: uuid.UUID) -> dict[str, Any] | None:
@@ -67,8 +72,22 @@ class ComplaintsRepository:
         page: int = 1,
         page_size: int = 20,
     ) -> tuple[list[dict[str, Any]], int]:
-        where_clauses = []
-        params = []
+        """Filtered, paginated listing.
+
+        Serves the dashboard's list query. `ix_complaints_status_priority`
+        covers the (status, priority) filter combination and
+        `ix_complaints_created_at` backs the created_at DESC ordering that
+        pagination walks.
+
+        The secondary sort key on id is not decoration: the seed inserts every
+        row inside one transaction, so now() -- and therefore created_at -- is
+        identical for all of them. Ordering by created_at alone leaves the order
+        of equal keys undefined, so LIMIT/OFFSET can return rows in a different
+        order on each execution: the same complaint appears on page 1 and again
+        on page 2, and another is skipped entirely.
+        """
+        where_clauses: list[str] = []
+        params: list[Any] = []
 
         if category:
             where_clauses.append("category = %s")
@@ -85,7 +104,10 @@ class ComplaintsRepository:
         count_query = f"SELECT COUNT(*) as total FROM complaints {where_sql}"
         async with self._conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(count_query, params)
-            total = (await cur.fetchone())["total"]
+            count_row = await cur.fetchone()
+        # COUNT(*) always returns exactly one row, so the `or` branch is
+        # unreachable; it just satisfies the Optional the driver reports.
+        total = (count_row or {"total": 0})["total"]
 
         offset = (page - 1) * page_size
         list_query = f"""
@@ -93,10 +115,13 @@ class ComplaintsRepository:
                    ai_summary, triaged_by, triage_latency_ms, created_at, updated_at
             FROM complaints
             {where_sql}
-            ORDER BY created_at DESC
+            ORDER BY created_at DESC, id DESC
             LIMIT %s OFFSET %s
         """
-        params.extend([str(page_size), str(offset)])
+        # LIMIT/OFFSET take real integers. The previous version passed
+        # str(page_size)/str(offset) and relied on Postgres coercing them,
+        # which also defeated index-friendly parameter typing.
+        params.extend([page_size, offset])
         async with self._conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(list_query, params)
             rows = await cur.fetchall()

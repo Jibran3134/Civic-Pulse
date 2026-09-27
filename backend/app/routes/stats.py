@@ -11,7 +11,20 @@ logger = get_logger(__name__)
 router = APIRouter()
 
 
-@router.get("/stats")
+@router.get(
+    "/stats",
+    responses={
+        200: {
+            "description": "Aggregate counts by category and priority.",
+            "headers": {
+                "X-Cache": {
+                    "description": "HIT when served from the Redis read-through cache, MISS on a miss.",
+                    "schema": {"type": "string", "enum": ["HIT", "MISS"]},
+                }
+            },
+        }
+    },
+)
 async def get_stats(
     response: Response,
     cache: CacheProvider = Depends(get_cache_provider),

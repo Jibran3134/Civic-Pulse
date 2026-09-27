@@ -1,4 +1,6 @@
 import uuid
+from datetime import datetime
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field, field_validator
@@ -6,6 +8,7 @@ from pydantic import BaseModel, Field, field_validator
 from app.core.dependencies import get_cache_provider, get_complaints_repository, get_rate_limiter, get_request_id
 from app.core.logging import get_logger
 from app.providers.cache import CacheProvider, RateLimiterProvider
+from app.providers.triage.base import Category, Priority
 from app.repositories.complaints import ComplaintsRepository
 from app.services.status_machine import VALID_TRANSITIONS, Status
 from app.services.triage import TriageService
@@ -29,18 +32,22 @@ class ComplaintCreate(BaseModel):
     @classmethod
     def text_not_empty(cls, v: str) -> str:
         if not v.strip():
-            raise ValueError("Complaint text cannot be empty")
+            raise ValueError("complaint text cannot be empty or whitespace only")
         return v.strip()
 
     @field_validator("location")
     @classmethod
     def location_not_empty(cls, v: str) -> str:
         if not v.strip():
-            raise ValueError("Location cannot be empty")
+            raise ValueError("location cannot be empty or whitespace only")
         return v.strip()
 
-
-from datetime import datetime
+    @field_validator("reporter_contact")
+    @classmethod
+    def contact_trimmed(cls, v: str | None) -> str | None:
+        # An all-whitespace contact is the same as no contact; storing "   "
+        # would look like data to anyone reading the row.
+        return v.strip() if v and v.strip() else None
 
 
 class ComplaintResponse(BaseModel):
@@ -66,7 +73,12 @@ class ComplaintListResponse(BaseModel):
 
 
 class StatusUpdate(BaseModel):
-    status: str
+    # Typed as the enum, not str. With a bare str an unknown value raised
+    # ValueError inside the route body, which the global handler turned into a
+    # 500 -- a client error reported as a server fault. With the enum, Pydantic
+    # rejects it and the RequestValidationError handler returns a
+    # field-level 400.
+    status: Status
 
 
 class ErrorResponse(BaseModel):
@@ -74,14 +86,49 @@ class ErrorResponse(BaseModel):
     field_errors: dict[str, str] | None = None
 
 
+# Declared in the OpenAPI schema because the frontend's typed client is
+# generated from it. A header the schema does not mention is a header a
+# generated client cannot see, which is how "render the cache state from
+# X-Cache" quietly becomes an untyped cast on the frontend.
+ERROR_RESPONSE_HEADERS: dict[str, Any] = {
+    "Retry-After": {
+        "description": "Seconds to wait before retrying. Present on 429.",
+        "schema": {"type": "integer"},
+    }
+}
+
+CREATE_RESPONSES: dict[int | str, dict[str, Any]] = {
+    400: {"model": ErrorResponse, "description": "Validation failed; see field_errors."},
+    429: {
+        "model": ErrorResponse,
+        "description": "Rate limit exceeded.",
+        "headers": ERROR_RESPONSE_HEADERS,
+    },
+}
+
+
+def client_ip_from(request: Request) -> str:
+    """Best-effort client IP for rate limiting.
+
+    Prefers the left-most X-Forwarded-For entry, which is the original client,
+    because the backend sits behind the Ingress in Kubernetes. request.client.host
+    alone is wrong there: without --proxy-headers on uvicorn it reports the
+    Ingress controller's pod IP, which would put every user on the internet into
+    one shared token bucket and let a single caller lock out everyone else.
+    """
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        first = forwarded.split(",")[0].strip()
+        if first:
+            return first
+    return request.client.host if request.client else "unknown"
+
+
 @router.post(
     "/complaints",
     response_model=ComplaintResponse,
     status_code=status.HTTP_201_CREATED,
-    responses={
-        400: {"model": ErrorResponse},
-        429: {"model": ErrorResponse},
-    },
+    responses=CREATE_RESPONSES,
 )
 async def create_complaint(
     complaint: ComplaintCreate,
@@ -92,7 +139,7 @@ async def create_complaint(
     cache: CacheProvider = Depends(get_cache_provider),
     request_id: str = Depends(get_request_id),
 ):
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = client_ip_from(request)
     allowed, retry_after = await rate_limiter.check_limit(client_ip)
 
     if not allowed:
@@ -148,17 +195,24 @@ async def get_complaint(
 
 @router.get("/complaints", response_model=ComplaintListResponse)
 async def list_complaints(
-    category: str | None = Query(None),
-    priority: str | None = Query(None),
-    status: str | None = Query(None),
+    category: Category | None = Query(None, description="Filter by triage category"),
+    priority: Priority | None = Query(None, description="Filter by triage priority"),
+    status: Status | None = Query(None, description="Filter by workflow status"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     repo: ComplaintsRepository = Depends(get_complaints_repository),
 ):
+    """Paginated, filterable list.
+
+    The filters are typed as enums rather than str. As strings they were bound
+    straight into the WHERE clause, so an unknown value reached Postgres and
+    came back as a 22P02 invalid-text-representation error, surfacing as a 500.
+    With enums the value is validated at the edge and rejected as a 400.
+    """
     items, total = await repo.list_complaints(
-        category=category,
-        priority=priority,
-        status=status,
+        category=category.value if category else None,
+        priority=priority.value if priority else None,
+        status=status.value if status else None,
         page=page,
         page_size=page_size,
     )
@@ -174,8 +228,9 @@ async def list_complaints(
     "/complaints/{complaint_id}/status",
     response_model=ComplaintResponse,
     responses={
-        404: {"model": ErrorResponse},
-        409: {"model": ErrorResponse},
+        400: {"model": ErrorResponse, "description": "Unknown status value."},
+        404: {"model": ErrorResponse, "description": "Complaint not found."},
+        409: {"model": ErrorResponse, "description": "Illegal transition; the detail names the attempt."},
     },
 )
 async def update_complaint_status(
@@ -188,13 +243,25 @@ async def update_complaint_status(
         raise HTTPException(status_code=404, detail="Complaint not found")
 
     current_status = Status(current["status"])
-    new_status = Status(status_update.status)
+    new_status = status_update.status
 
+    # Membership test against the explicit transition table in
+    # services/status_machine.py, not a chain of ifs. 409, and the message
+    # names the attempted transition and the legal ones, so the operator UI can
+    # show the server's reason verbatim instead of a generic "error".
     if new_status not in VALID_TRANSITIONS.get(current_status, set()):
-        raise HTTPException(
-            status_code=409,
-            detail=f"Invalid status transition from {current_status.value} to {new_status.value}",
-        )
+        allowed = sorted(s.value for s in VALID_TRANSITIONS.get(current_status, set()))
+        detail = f"Invalid status transition from {current_status.value} to {new_status.value}."
+        if allowed:
+            detail += f" Allowed from {current_status.value}: {', '.join(allowed)}."
+        else:
+            detail += f" {current_status.value} is a terminal state; no further transitions are permitted."
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
 
     updated = await repo.update_status(complaint_id, new_status.value)
+    if not updated:
+        # The row was read moments ago and the transition is legal, so this is
+        # unreachable. Handled anyway: returning **None would raise TypeError
+        # here and surface as a 500 for what is really a 404.
+        raise HTTPException(status_code=404, detail="Complaint not found")
     return ComplaintResponse(**updated)

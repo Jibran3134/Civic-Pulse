@@ -8,6 +8,7 @@ from typing import Any
 from app.core.config import get_settings
 from app.core.dependencies import get_cache_provider
 from app.core.logging import get_logger
+from app.core.metrics import record_triage
 from app.providers.cache import CacheProvider
 from app.providers.triage.base import TriageOutcome, TriageProvider
 from app.providers.triage.factory import get_triage_provider
@@ -122,6 +123,13 @@ class TriageService:
             await self._record_outcome(recorded_outcome)
 
             logger.info("Triage content-hash cache hit", extra={"hash": content_hash, "latency_ms": latency_ms})
+
+            # A cache hit is a real outcome and is labelled separately from a
+            # live inference. Without the distinction the latency histogram
+            # mixes ~1ms cache reads with multi-second model calls and the
+            # chart says nothing useful.
+            with suppress(Exception):
+                record_triage(outcome.triaged_by, latency_ms / 1000, fallback=False, cached=True)
             return outcome
 
         # Record total queries counter
@@ -131,6 +139,12 @@ class TriageService:
         # 2. Cache miss -> Invoke active TriageProvider
         provider = self._get_provider()
         is_fallback = False
+        # Which provider actually produced the result. After a fallback this is
+        # "rules:fallback", which is right for the stored row but wrong for the
+        # Prometheus label: the question an operator asks of a fallback counter
+        # is "is Groq flapping?", not "did rules run?". failed_provider keeps
+        # the two answers apart.
+        failed_provider = ""
         try:
             result = await provider.triage(text, location)
             triaged_by = provider.name
@@ -139,6 +153,7 @@ class TriageService:
             # Structured JSON warning with complaint_id, provider, error_class (§2.6)
             is_fallback = True
             error_class = e.__class__.__name__
+            failed_provider = provider.name
             logger.warning(
                 "triage_fallback",
                 extra={
@@ -184,6 +199,21 @@ class TriageService:
             "timestamp": datetime.now(UTC).isoformat(),
         }
         await self._record_outcome(recorded_outcome)
+
+        # 6. Prometheus. The triage service is the only layer that knows
+        # whether this result came from the model, the content-hash cache, or
+        # the rules fallback, so it is the only place these can be recorded
+        # honestly. Without it /metrics advertised triage_duration_seconds and
+        # triage_fallback_total as series that never moved.
+        with suppress(Exception):
+            record_triage(
+                # Labelled by the provider that failed, so the graph answers
+                # "which upstream is degraded?" rather than "did rules run?".
+                failed_provider or triaged_by,
+                latency_ms / 1000,
+                fallback=is_fallback,
+                cached=False,
+            )
 
         logger.info(
             "Triage completed",

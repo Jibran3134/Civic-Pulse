@@ -54,9 +54,18 @@ services:
     image: ollama/ollama:0.1.47
     container_name: civicpulse-ollama
     volumes:
+      # Model weights, so `ollama pull` does not re-download ~1.3 GB on every
+      # `compose up`. Useless without the network note below.
       - ollama_models:/root/.ollama
     networks:
       - internal
+      # Ollama joins BOTH networks deliberately. It needs `internal` so the
+      # backend can reach it, but `internal: true` means no route to the
+      # internet -- so without a second, non-internal network the container can
+      # never run `ollama pull` and this volume can never be populated. Joining
+      # `edge` grants outbound access without exposing Ollama to the frontend:
+      # its only ingress is from the backend, and it publishes no host port.
+      - edge
     healthcheck:
       test: ["CMD", "ollama", "list"]
       interval: 30s
@@ -72,6 +81,39 @@ services:
           cpus: '1.0'
           memory: 2G
     restart: unless-stopped
+
+  # One-shot: applies Alembic migrations, then seeds, in that order, and exits.
+  #
+  # Without this a clean clone brings up Postgres with no `complaints` table, so
+  # every API call fails with `relation "complaints" does not exist` -- while
+  # /health passes and the container reports healthy, because the liveness probe
+  # deliberately does not touch the database. `restart: "no"` is required, not
+  # optional: with `unless-stopped` a failing migration would be retried in a
+  # loop forever.
+  #
+  # A separate service rather than a backend entrypoint, so the backend image
+  # stays a plain web server and the migration is not re-run on every restart.
+  # backend depends on it completing, so no request can arrive before the
+  # schema exists.
+  migrate:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: civicpulse-migrate
+    command: ["sh", "-c", "alembic upgrade head && python scripts/seed.py"]
+    environment:
+      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/civicpulse
+      - REDIS_URL=redis://redis:6379/0
+      - LOG_LEVEL=INFO
+      - ENVIRONMENT=development
+    networks:
+      - internal
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+    restart: "no"
 
   backend:
     build:
@@ -95,8 +137,27 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      # Migrations and seed must finish before the first request arrives,
+      # otherwise /ready passes against an empty schema.
+      migrate:
+        condition: service_completed_successfully
     volumes:
+      # Bind mount for hot reload. Right in compose.yaml because a developer
+      # editing app/ should not have to rebuild the image; wrong in
+      # compose.prod.yaml because production must run the immutable artifact CI
+      # built and scanned, and a bind mount would silently override it with
+      # whatever happens to be on the host.
       - ./backend:/app
+    healthcheck:
+      # Hits /health, the liveness endpoint, which never touches Postgres or
+      # Redis. A healthcheck that failed on a slow database would restart a
+      # perfectly healthy container and cascade the failure through
+      # depends_on: service_healthy.
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).status==200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     deploy:
       resources:
         limits:

@@ -12,6 +12,14 @@ from alembic import context
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 from app.core.config import get_settings
+from app.core.database import configure_event_loop_policy
+
+# Must run before the async engine opens a connection. Without it
+# `alembic upgrade head` fails on Windows with "Psycopg cannot use the
+# 'ProactorEventLoop'" even though the identical command works inside the Linux
+# container -- a divergence between the developer's machine and CI that only
+# shows up for whoever is not using Docker.
+configure_event_loop_policy()
 
 settings = get_settings()
 
