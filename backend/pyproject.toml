@@ -57,7 +57,11 @@ select = ["E", "F", "I", "W", "UP", "B", "C4", "PTH", "SIM", "T20", "ARG", "PL"]
 ignore = [
     "S101", "S603", "S607",
     "B008", "PLR0913", "PLR0917", "PLR2004", "ARG001", "ARG002",
-    "PLW0603", "PLC0415", "UP042", "F841", "F401", "E402",
+    # F401 is deliberately NOT ignored. Turning it off repo-wide had been
+    # hiding genuinely dead imports -- a duplicated cache import, an unused
+    # datetime -- behind a lint config that reported "All checks passed",
+    # which is the worst combination available: no signal and a green tick.
+    "PLW0603", "PLC0415", "UP042", "F841", "E402",
 ]
 
 [tool.ruff.format]
@@ -88,6 +92,11 @@ addopts = "-v --tb=short"
 [tool.coverage.run]
 source = ["app"]
 omit = ["tests/*", "alembic/*"]
+# Branch coverage is what makes the untested error paths visible. Statement
+# coverage alone reported a healthy-looking number while whole handlers -- the
+# metrics wiring, the fallback branch, the 400 paths -- were never executed.
+branch = true
 
 [tool.coverage.report]
 exclude_lines = ["pragma: no cover", "def __repr__", "raise NotImplementedError"]
+show_missing = true

@@ -1,4 +1,3 @@
-import re
 
 from app.providers.triage.base import Category, Priority, TriageProvider, TriageResult
 
