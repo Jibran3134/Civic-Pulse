@@ -332,7 +332,7 @@ class TestTriageServiceOrchestrationAndFallback:
         POST /api/complaints still returns 201 and triaged_by == "rules:fallback".'
         """
         import uuid
-        from datetime import datetime, timezone
+        from datetime import UTC, datetime
         from app.main import app
         from app.core.dependencies import get_complaints_repository, get_rate_limiter
 
@@ -352,8 +352,8 @@ class TestTriageServiceOrchestrationAndFallback:
             "ai_summary": "Burst water main flooding Street 12",
             "triaged_by": "rules:fallback",
             "triage_latency_ms": 15,
-            "created_at": datetime.now(timezone.utc),
-            "updated_at": datetime.now(timezone.utc),
+            "created_at": datetime.now(UTC),
+            "updated_at": datetime.now(UTC),
         }
 
         mock_limiter = AsyncMock()

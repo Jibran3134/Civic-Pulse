@@ -1,14 +1,15 @@
-from collections import deque
-from datetime import datetime, timezone
 import hashlib
 import time
+from collections import deque
+from contextlib import suppress
+from datetime import UTC, datetime
 from typing import Any
 
 from app.core.config import get_settings
 from app.core.dependencies import get_cache_provider
 from app.core.logging import get_logger
 from app.providers.cache import CacheProvider
-from app.providers.triage.base import TriageOutcome, TriageProvider, TriageResult
+from app.providers.triage.base import TriageOutcome, TriageProvider
 from app.providers.triage.factory import get_triage_provider
 
 logger = get_logger(__name__)
@@ -107,18 +108,16 @@ class TriageService:
             )
 
             # Increment cache hit stats
-            try:
+            with suppress(Exception):
                 await cache.incr("triage:stats:total_queries")
                 await cache.incr("triage:stats:cache_hits")
-            except Exception:
-                pass
 
             recorded_outcome = {
                 "provider": outcome.triaged_by,
                 "latency_ms": latency_ms,
                 "fallback": False,
                 "cache_hit": True,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
             }
             await self._record_outcome(recorded_outcome)
 
@@ -126,10 +125,8 @@ class TriageService:
             return outcome
 
         # Record total queries counter
-        try:
+        with suppress(Exception):
             await cache.incr("triage:stats:total_queries")
-        except Exception:
-            pass
 
         # 2. Cache miss -> Invoke active TriageProvider
         provider = self._get_provider()
@@ -184,7 +181,7 @@ class TriageService:
             "latency_ms": latency_ms,
             "fallback": is_fallback,
             "cache_hit": False,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
         }
         await self._record_outcome(recorded_outcome)
 

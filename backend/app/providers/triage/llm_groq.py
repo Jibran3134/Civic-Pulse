@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import random
@@ -198,8 +199,6 @@ class LLMTriage(TriageProvider):
                 if is_timeout or is_retryable_status:
                     # Jitter between 0.2 and 0.6 seconds
                     jitter_sec = 0.2 + random.uniform(0.05, 0.4)
-                    import asyncio
-
                     logger.warning(
                         f"Groq call failed with retryable error ({e}), retrying once after {jitter_sec:.2f}s"
                     )
