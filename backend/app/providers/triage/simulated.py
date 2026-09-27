@@ -2,6 +2,33 @@ import re
 
 from app.providers.triage.base import Category, Priority, TriageProvider, TriageResult
 
+_CATEGORY_KEYWORDS: list[tuple[list[str], Category]] = [
+    (["water", "pipe", "drain", "leak", "flood"], Category.WATER),
+    (["electric", "power", "wire", "spark", "transformer"], Category.ELECTRICITY),
+    (["waste", "trash", "garbage", "bin", "sewage"], Category.SANITATION),
+    (["road", "street", "pothole", "pavement"], Category.ROADS),
+    (["light", "lamp", "dark", "pole"], Category.STREETLIGHTS),
+]
+
+_PRIORITY_KEYWORDS: list[tuple[list[str], Priority]] = [
+    (["urgent", "danger", "burst", "flood", "emergency", "fire"], Priority.HIGH),
+    (["minor", "request", "low"], Priority.LOW),
+]
+
+
+def _detect_category(lower: str) -> Category:
+    for keywords, cat in _CATEGORY_KEYWORDS:
+        if any(k in lower for k in keywords):
+            return cat
+    return Category.OTHER
+
+
+def _detect_priority(lower: str) -> Priority:
+    for keywords, pri in _PRIORITY_KEYWORDS:
+        if any(k in lower for k in keywords):
+            return pri
+    return Priority.NORMAL
+
 
 class SimulatedTriage(TriageProvider):
     name = "simulated"
@@ -29,36 +56,9 @@ class SimulatedTriage(TriageProvider):
         if self.return_malformed:
             raise ValueError("Malformed output simulated: invalid category or syntax")
 
-        # If explicit fixed values are provided, use them
-        if self.fixed_category is not None:
-            category = self.fixed_category
-        else:
-            # Deterministic keyword mapping for CI
-            lower = text.lower()
-            if any(k in lower for k in ["water", "pipe", "drain", "leak", "flood"]):
-                category = Category.WATER
-            elif any(k in lower for k in ["electric", "power", "wire", "spark", "transformer"]):
-                category = Category.ELECTRICITY
-            elif any(k in lower for k in ["waste", "trash", "garbage", "bin", "sewage"]):
-                category = Category.SANITATION
-            elif any(k in lower for k in ["road", "street", "pothole", "pavement"]):
-                category = Category.ROADS
-            elif any(k in lower for k in ["light", "lamp", "dark", "pole"]):
-                category = Category.STREETLIGHTS
-            else:
-                category = Category.OTHER
-
-        if self.fixed_priority is not None:
-            priority = self.fixed_priority
-        else:
-            lower = text.lower()
-            if any(k in lower for k in ["urgent", "danger", "burst", "flood", "emergency", "fire"]):
-                priority = Priority.HIGH
-            elif any(k in lower for k in ["minor", "request", "low"]):
-                priority = Priority.LOW
-            else:
-                priority = Priority.NORMAL
-
+        lower = text.lower()
+        category = self.fixed_category if self.fixed_category is not None else _detect_category(lower)
+        priority = self.fixed_priority if self.fixed_priority is not None else _detect_priority(lower)
         summary = self.fixed_summary or (text[:137] + "..." if len(text) > 140 else text)
 
         return TriageResult(

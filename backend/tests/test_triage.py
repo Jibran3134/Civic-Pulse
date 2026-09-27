@@ -1,7 +1,8 @@
 import json
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
 import httpx
+import pytest
 
 from app.providers.triage.base import Category, Priority, TriageResult
 from app.providers.triage.llm_groq import LLMTriage, redact_pii
@@ -333,8 +334,9 @@ class TestTriageServiceOrchestrationAndFallback:
         """
         import uuid
         from datetime import UTC, datetime
-        from app.main import app
+
         from app.core.dependencies import get_complaints_repository, get_rate_limiter
+        from app.main import app
 
         # Provider that always raises
         failing_provider = SimulatedTriage(raise_exception=True)
