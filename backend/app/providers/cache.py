@@ -264,6 +264,11 @@ class RateLimiterProvider:
     async def _get_client(self) -> redis.Redis:
         if self._client is None:
             self._client = await get_rate_limit_client()
+            # The RegisteredScript returned by register_script holds a
+            # reference to the client it was registered on. Reset it here so
+            # _get_script() re-registers on the new connection rather than
+            # using a stale handle that would raise and fall into fail-open.
+            self._script = None
         return self._client
 
     def _get_script(self, client: redis.Redis):

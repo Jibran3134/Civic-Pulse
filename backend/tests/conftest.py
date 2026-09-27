@@ -84,6 +84,13 @@ async def isolate_shared_redis_state():
     def _drop_cached_clients():
         for provider in (get_cache_provider(), get_rate_limiter()):
             provider._client = None
+        # The Lua script handle holds a reference to the old client. If only
+        # _client is reset, _get_script() short-circuits on `self._script is
+        # not None` and hands the new call a handle bound to the dead
+        # connection, which raises and falls into the fail-open except branch
+        # -- the key is never written to Redis and the distribution test fails.
+        limiter = get_rate_limiter()
+        limiter._script = None
 
     global _redis_reachable
     if _redis_reachable is False:
