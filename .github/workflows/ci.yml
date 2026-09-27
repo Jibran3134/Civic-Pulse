@@ -5,6 +5,14 @@ on:
     branches: [main, dev]
   push:
     branches: [dev]
+  # Reusable entry point: cd.yml calls this workflow as its "test" job so the
+  # exact same checks that gate PRs also gate a push to main.
+  workflow_call:
+
+# Least privilege by default. Individual jobs may widen this (e.g. packages: write)
+# via their own `permissions:` block, but nothing is granted implicitly.
+permissions:
+  contents: read
 
 env:
   REGISTRY: ghcr.io
@@ -17,6 +25,18 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # `hashFiles()` is NOT allowed in an `if:` expression (Context.md §19) and,
+      # more fundamentally, it evaluates against the workflow repo rather than the
+      # checked-out worktree. Probe the file on disk after checkout instead.
+      - name: Check frontend exists
+        id: check
+        run: |
+          if [ -f frontend/package.json ]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -52,19 +72,19 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
 
       - name: Install frontend deps
-        if: ${{ hashFiles('frontend/package-lock.json') != '' }}
+        if: ${{ steps.check.outputs.exists == 'true' }}
         run: |
           cd frontend
           npm ci
 
       - name: ESLint
-        if: ${{ hashFiles('frontend/package-lock.json') != '' }}
+        if: ${{ steps.check.outputs.exists == 'true' }}
         run: |
           cd frontend
           npm run lint
 
       - name: TypeScript typecheck
-        if: ${{ hashFiles('frontend/package-lock.json') != '' }}
+        if: ${{ steps.check.outputs.exists == 'true' }}
         run: |
           cd frontend
           npx tsc --noEmit
@@ -136,6 +156,8 @@ jobs:
             sleep 2
           done
 
+      # Split into two psql calls: DROP DATABASE cannot run inside a transaction
+      # block, and a single `psql -c "DROP ...; CREATE ..."` fails (§19).
       - name: Drop and recreate test database
         run: |
           PGPASSWORD=postgres psql -h localhost -U postgres -c "DROP DATABASE IF EXISTS civicpulse;"
@@ -161,7 +183,15 @@ jobs:
   test-frontend:
     name: Frontend Tests
     runs-on: ubuntu-latest
+    outputs:
+      # Lets CD (and anyone reading the run) tell "tests passed" from
+      # "tests never ran because the frontend is not in the tree yet".
+      frontend-present: ${{ steps.check.outputs.exists }}
     steps:
+      # Checkout MUST come first: the file we probe only exists after checkout.
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Check frontend exists
         id: check
         run: |
@@ -170,10 +200,6 @@ jobs:
           else
             echo "exists=false" >> $GITHUB_OUTPUT
           fi
-
-      - name: Checkout
-        if: ${{ steps.check.outputs.exists == 'true' }}
-        uses: actions/checkout@v4
 
       - name: Set up Node
         if: ${{ steps.check.outputs.exists == 'true' }}
@@ -194,6 +220,17 @@ jobs:
         run: |
           cd frontend
           npm run test -- --run --coverage
+
+      # A green tick here must never be mistaken for "frontend tests passed" when
+      # nothing was actually executed, so say so explicitly in the log.
+      - name: Report skipped frontend tests
+        if: ${{ steps.check.outputs.exists != 'true' }}
+        run: |
+          {
+            echo "::notice title=Frontend tests SKIPPED::frontend/package.json is not present in this commit, so no frontend test, lint or typecheck command was executed."
+            echo "SKIPPED: frontend tests were NOT run (no frontend/package.json in the worktree)."
+            echo "This job passing is NOT evidence that the frontend is correct."
+          }
 
   build:
     name: Build & Scan Images
@@ -228,8 +265,10 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # Pinned to an immutable tag: @master is a floating ref, so a compromised or
+      # simply-upstream-modified action can change what CI executes without a commit.
       - name: Trivy scan (backend)
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.28.0
         with:
           scan-type: "image"
           scan-ref: "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-backend:${{ github.sha }}"
@@ -253,7 +292,7 @@ jobs:
 
       - name: Trivy scan (frontend)
         if: ${{ steps.check-frontend.outputs.exists == 'true' }}
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.28.0
         with:
           scan-type: "image"
           scan-ref: "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-frontend:${{ github.sha }}"
@@ -267,7 +306,13 @@ jobs:
     name: Kubeconform Manifests
     runs-on: ubuntu-latest
     steps:
-      - name: Check k8s exists
+      # The k8s/ tree only exists after checkout, so the probe has to run after it.
+      # Guarding the checkout itself made `exists` permanently false and kubeconform
+      # silently never ran.
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check k8s manifests exist
         id: check
         run: |
           if [ -f k8s/overlays/prod/kustomization.yaml ]; then
@@ -276,20 +321,36 @@ jobs:
             echo "exists=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Checkout
-        if: ${{ steps.check.outputs.exists == 'true' }}
-        uses: actions/checkout@v4
-
       - name: Install kustomize
         if: ${{ steps.check.outputs.exists == 'true' }}
         run: |
           curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
           sudo mv kustomize /usr/local/bin/
 
+      # kubeconform was never installed, so the validate step could only ever fail
+      # with "kubeconform: command not found" if it had actually been reached.
+      - name: Install kubeconform
+        if: ${{ steps.check.outputs.exists == 'true' }}
+        run: |
+          KUBECONFORM_VERSION=0.6.7
+          curl -sSL -o kubeconform.tar.gz \
+            "https://github.com/yannh/kubeconform/releases/download/v${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          tar -xzf kubeconform.tar.gz kubeconform
+          sudo mv kubeconform /usr/local/bin/
+          kubeconform -v
+
       - name: Validate manifests
         if: ${{ steps.check.outputs.exists == 'true' }}
         run: |
-          kustomize build k8s/overlays/prod | kubeconform -strict -summary
+          # -ignore-missing-schemas: our own CRDs (VerticalPodAutoscaler) and
+          # newer/older API versions have no published schema; that is not a
+          # manifest error and must not fail the build.
+          kustomize build k8s/overlays/prod | kubeconform -strict -summary -ignore-missing-schemas
+
+      - name: Report skipped manifest validation
+        if: ${{ steps.check.outputs.exists != 'true' }}
+        run: |
+          echo "::notice title=Manifest validation SKIPPED::k8s/overlays/prod/kustomization.yaml not found; kubeconform did not run."
 
   integration:
     name: Compose Integration Smoke
@@ -348,16 +409,48 @@ jobs:
           echo "$RESPONSE"
           echo "$RESPONSE" | grep -q '"status":"open"'
 
+          # The triage output is the point of the AI layer: assert the category is
+          # one the API contract actually defines, and that a provider signed off.
+          echo "$RESPONSE" | grep -Eq '"category":"(water|electricity|sanitation|roads|streetlights|other)"'
+          echo "$RESPONSE" | grep -Eq '"triaged_by":"[^"]+"'
+
       - name: Verify complaint persisted
         run: |
           curl -sf http://localhost:8000/api/complaints | grep -q "Mall Road"
 
-      - name: Verify cache behavior
+      # The old version of this step grepped the response BODY twice. The body is
+      # byte-identical on a cache HIT and a MISS, so it asserted nothing at all.
+      # The only thing that distinguishes the two is the X-Cache response HEADER.
+      - name: Verify cache MISS then HIT
         run: |
-          # First call - MISS
-          curl -sf http://localhost:8000/api/stats | grep -q "by_category"
-          # Second call - HIT
-          curl -sf http://localhost:8000/api/stats | grep -q "by_category"
+          # /ready and the complaint POSTs above do not populate the stats cache,
+          # so the first call must be a MISS.
+          curl -sfD /tmp/stats1.h -o /dev/null http://localhost:8000/api/stats
+          grep -i '^x-cache:' /tmp/stats1.h
+          grep -qi '^x-cache: *MISS' /tmp/stats1.h
+
+          curl -sfD /tmp/stats2.h -o /dev/null http://localhost:8000/api/stats
+          grep -i '^x-cache:' /tmp/stats2.h
+          grep -qi '^x-cache: *HIT' /tmp/stats2.h
+
+      - name: Verify cache invalidation on write
+        run: |
+          # A write must drop the cached aggregates, otherwise the stats view would
+          # keep serving a stale snapshot for up to the 30s TTL.
+          curl -s -X POST http://localhost:8000/api/complaints \
+            -H "Content-Type: application/json" \
+            -d '{"text":"Garbage not collected for three days in Model Town block B","location":"Model Town, Lahore"}' \
+            -o /dev/null -w 'POST status: %{http_code}\n'
+
+          curl -sfD /tmp/stats3.h -o /dev/null http://localhost:8000/api/stats
+          grep -i '^x-cache:' /tmp/stats3.h
+          grep -qi '^x-cache: *MISS' /tmp/stats3.h
+
+          # And the cache must still work after the invalidation, otherwise the
+          # first assertion above could have passed for the wrong reason.
+          curl -sfD /tmp/stats4.h -o /dev/null http://localhost:8000/api/stats
+          grep -i '^x-cache:' /tmp/stats4.h
+          grep -qi '^x-cache: *HIT' /tmp/stats4.h
 
       - name: Tear down
         if: always()
