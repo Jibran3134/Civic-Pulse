@@ -51,7 +51,16 @@ services:
     restart: unless-stopped
 
   ollama:
-    image: ollama/ollama:0.1.47
+    # 0.1.47 predates llama3.2 and cannot read its tensor layout. Every call
+    # died with "wrong number of tensors; expected 147, got 146", the runner
+    # aborted, /api/generate returned 500, and the provider silently fell back
+    # to rules -- so the container still reported healthy while inference was
+    # completely broken. CI never caught it because ci.yml starts the stack
+    # without ollama and pins TRIAGE_PROVIDER=simulated.
+    #
+    # 0.34.4 is the version verified working on this machine. Pinned rather
+    # than `latest`, matching how every other image in this file is pinned.
+    image: ollama/ollama:0.34.4
     container_name: civicpulse-ollama
     volumes:
       # Model weights, so `ollama pull` does not re-download ~1.3 GB on every
