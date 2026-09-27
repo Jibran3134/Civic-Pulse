@@ -86,7 +86,8 @@ export const DashboardView: React.FC = () => {
 
   const totalPages = Math.ceil(total / pageSize) || 1
 
-  const allStatuses: Status[] = ['new', 'triaged', 'in_progress', 'resolved', 'rejected']
+  // Status values MUST match backend status_machine.py exactly
+  const allStatuses: Status[] = ['open', 'in_progress', 'resolved', 'rejected']
 
   return (
     <div className="view-container">
@@ -152,11 +153,13 @@ export const DashboardView: React.FC = () => {
               setPage(1)
             }}
           >
+            {/* Category values match backend DB enum exactly */}
             <option value="">All Categories</option>
             <option value="water">Water</option>
             <option value="electricity">Electricity</option>
-            <option value="waste">Waste</option>
+            <option value="sanitation">Sanitation</option>
             <option value="roads">Roads</option>
+            <option value="streetlights">Streetlights</option>
             <option value="other">Other</option>
           </select>
 
@@ -169,10 +172,10 @@ export const DashboardView: React.FC = () => {
               setPage(1)
             }}
           >
+            {/* Priority values match backend DB enum exactly: high | normal | low */}
             <option value="">All Priorities</option>
-            <option value="critical">Critical</option>
             <option value="high">High</option>
-            <option value="medium">Medium</option>
+            <option value="normal">Normal</option>
             <option value="low">Low</option>
           </select>
 
@@ -185,9 +188,9 @@ export const DashboardView: React.FC = () => {
               setPage(1)
             }}
           >
+            {/* Status values match backend status_machine.py: open→in_progress→resolved|rejected */}
             <option value="">All Statuses</option>
-            <option value="new">New</option>
-            <option value="triaged">Triaged</option>
+            <option value="open">Open</option>
             <option value="in_progress">In Progress</option>
             <option value="resolved">Resolved</option>
             <option value="rejected">Rejected</option>
@@ -296,18 +299,8 @@ export const DashboardView: React.FC = () => {
                         ))}
                       </select>
 
-                      {/* Fast-advance shortcut */}
-                      {c.status === 'new' && (
-                        <button
-                          className="btn-action-pill"
-                          title="Advance to triaged"
-                          disabled={updatingId === c.id}
-                          onClick={() => handleStatusChange(c.id, 'triaged')}
-                        >
-                          Triaged <ArrowRight size={12} />
-                        </button>
-                      )}
-                      {c.status === 'triaged' && (
+                      {/* Fast-advance shortcuts matching backend state machine: open→in_progress→resolved */}
+                      {c.status === 'open' && (
                         <button
                           className="btn-action-pill"
                           title="Advance to in_progress"
