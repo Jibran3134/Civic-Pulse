@@ -1,0 +1,51 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: civicpulse
+
+resources:
+  - ../../base
+
+labels:
+  - pairs:
+      environment: prod
+    includeSelectors: false
+
+images:
+  - name: ghcr.io/CHANGE_ME/civicpulse-backend
+    newTag: CHANGE_ME
+  - name: ghcr.io/CHANGE_ME/civicpulse-frontend
+    newTag: CHANGE_ME
+
+patches:
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: backend
+        namespace: civicpulse
+      spec:
+        # Must stay equal to the HPA's minReplicas. The HPA owns this field
+        # once the Deployment exists, and on its first reconciliation it
+        # reconciles toward minReplicas — so a declarative 3 here produces a
+        # spurious scale-in event on every fresh apply, which then shows up as
+        # a confusing blip in the `kubectl get hpa -w` evidence capture.
+        replicas: 2
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: frontend
+        namespace: civicpulse
+      spec:
+        replicas: 3
+  - patch: |-
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: civicpulse-config
+        namespace: civicpulse
+      data:
+        ENVIRONMENT: "production"
+        LOG_LEVEL: "INFO"
+        TRIAGE_PROVIDER: "llm:groq"
