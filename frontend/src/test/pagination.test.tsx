@@ -7,6 +7,9 @@ vi.mock('../api/client', () => ({
   api: {
     getComplaints: vi.fn(),
     updateComplaintStatus: vi.fn(),
+    getStatusTransitions: vi.fn().mockResolvedValue({
+      transitions: {},
+    }),
   },
   ApiError: class extends Error {
     status: number

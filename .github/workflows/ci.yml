@@ -9,6 +9,14 @@ on:
   # exact same checks that gate PRs also gate a push to main.
   workflow_call:
 
+# A second push to the same branch makes the previous run's results irrelevant:
+# it tested a commit that is no longer the tip. Cancelling is safe here because
+# ci.yml publishes nothing and touches no shared cluster. cd.yml deliberately
+# does not do this -- see its own concurrency block.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 # Least privilege by default. Individual jobs may widen this (e.g. packages: write)
 # via their own `permissions:` block, but nothing is granted implicitly.
 permissions:
@@ -43,6 +51,10 @@ jobs:
         with:
           python-version: "3.12"
           cache: "pip"
+          # Without this, setup-python looks for requirements.txt, which does not
+          # exist in this repo -- the backend declares its dependencies in
+          # pyproject.toml. The cache then never hits, or the step errors out.
+          cache-dependency-path: backend/pyproject.toml
 
       - name: Install backend deps
         run: |
@@ -133,6 +145,10 @@ jobs:
         with:
           python-version: "3.12"
           cache: "pip"
+          # Without this, setup-python looks for requirements.txt, which does not
+          # exist in this repo -- the backend declares its dependencies in
+          # pyproject.toml. The cache then never hits, or the step errors out.
+          cache-dependency-path: backend/pyproject.toml
 
       - name: Install backend deps
         run: |
@@ -293,15 +309,25 @@ jobs:
           sudo install -m 0755 trivy /usr/local/bin/trivy
           trivy --version
 
+      # The scan covers OS packages and language manifests. It previously passed
+      # --vuln-type library, which limited Trivy to pip and npm and silently
+      # excluded every OS-level CVE in python:3.12-slim -- glibc, OpenSSL, zlib.
+      # The job was named "Build & Scan Images" and read as a full image scan
+      # while checking only two dependency manifests.
+      #
+      # --ignore-unfixed is kept deliberately: a HIGH with no upstream fix is
+      # not actionable by us, and failing on it would mean a permanently red
+      # pipeline that everyone learns to ignore. Everything with a fix
+      # available fails the build via --exit-code 1.
       - name: Trivy scan (backend)
         run: |
           set -euo pipefail
           trivy image \
             --exit-code 1 \
             --severity HIGH,CRITICAL \
-            --vuln-type library \
             --ignore-unfixed \
             --scanners vuln \
+            --ignorefile .trivyignore.yaml \
             "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-backend:${{ github.sha }}"
 
       - name: Build frontend
@@ -323,9 +349,9 @@ jobs:
           trivy image \
             --exit-code 1 \
             --severity HIGH,CRITICAL \
-            --vuln-type library \
             --ignore-unfixed \
             --scanners vuln \
+            --ignorefile .trivyignore.yaml \
             "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-frontend:${{ github.sha }}"
 
   manifests:

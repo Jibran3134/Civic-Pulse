@@ -1,12 +1,13 @@
 from collections.abc import AsyncGenerator
 
-from fastapi import Request
+from fastapi import Depends, Request
 
 from app.core.database import get_connection
 from app.core.logging import get_logger
 from app.providers.cache import CacheProvider, RateLimiterProvider
 from app.providers.triage.factory import get_triage_provider
 from app.repositories.complaints import ComplaintsRepository
+from app.services.statistics import StatisticsService
 
 logger = get_logger(__name__)
 
@@ -45,3 +46,16 @@ def get_request_id(request: Request) -> str:
 
 def get_triage_provider_dep():
     return get_triage_provider()
+
+
+def get_statistics_service(
+    repo: ComplaintsRepository = Depends(get_complaints_repository),
+    cache: CacheProvider = Depends(get_cache_provider),
+) -> StatisticsService:
+    """Build the statistics service with its collaborators injected.
+
+    Injected rather than constructed inside the handler, so a test can supply a
+    stub repository or a cache without patching a module global, and so the
+    service cannot reach for a dependency the caller did not agree to.
+    """
+    return StatisticsService(repo=repo, cache=cache)

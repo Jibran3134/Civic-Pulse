@@ -15,6 +15,7 @@ class ComplaintsRepository:
 
     async def create(
         self,
+        complaint_id: str,
         text: str,
         location: str,
         reporter_contact: str | None,
@@ -24,10 +25,15 @@ class ComplaintsRepository:
         triaged_by: str,
         triage_latency_ms: int,
     ) -> dict[str, Any]:
+        # The id is supplied by the caller rather than left to
+        # gen_random_uuid(). The route needs the same value before triage so the
+        # fallback WARNING can name the complaint it belongs to; a
+        # server-generated id would only exist after the INSERT, which is after
+        # triage has already run and already failed.
         query = """
-            INSERT INTO complaints (text, location, reporter_contact, category, priority,
+            INSERT INTO complaints (id, text, location, reporter_contact, category, priority,
                                     ai_summary, triaged_by, triage_latency_ms, status)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'open')
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'open')
             RETURNING id, text, location, reporter_contact, category, priority, status,
                       ai_summary, triaged_by, triage_latency_ms, created_at, updated_at
         """
@@ -35,6 +41,7 @@ class ComplaintsRepository:
             await cur.execute(
                 query,
                 (
+                    complaint_id,
                     text,
                     location,
                     reporter_contact,

@@ -1,0 +1,36 @@
+# Trivy accepted-risk exceptions.
+#
+# This is deliberately NOT a blanket ignore. Every entry states a specific
+# reason and an expiry, and an expired entry fails the scan rather than being
+# dropped -- so an exception cannot quietly become permanent.
+#
+# It exists because the Trivy invocation was widened from
+# `--vuln-type library` (npm and pip manifests only) to also cover OS packages.
+# The frontend's previous base image, nginx:1.27-alpine, was carrying 40
+# HIGH/CRITICAL findings with fixes available, 2 CRITICAL. Those were invisible
+# to the old scan, not absent. The base image is now digest-pinned to
+# nginx:alpine, which takes it to a single finding, recorded here.
+
+vulnerabilities:
+  # Expat XML injection via malformed UTF-16 input.
+  #
+  # nginx is reached here only to serve static files and reverse-proxy /api to
+  # the backend. This image never parses XML: no XML configuration, no XML
+  # request body handling, no libexpat call on any code path this service
+  # executes. The package is present only as a transitive dependency of the
+  # Alpine base, and removing it from the base is not possible without
+  # rebuilding nginx from source.
+  #
+  # Fixed in libexpat 2.8.5-r0. The pinned nginx digest predates that Alpine
+  # package bump. Re-checked when this entry expires and drop the exception if
+  # the base has moved.
+  #
+  # No `paths` filter: Trivy reports PkgPath as null for this finding, so a
+  # path constraint would match nothing and suppress nothing.
+  - id: CVE-2026-93990
+    statement: >
+      libexpat is an unused transitive dependency of the nginx:alpine base.
+      This service serves static assets and proxies /api; it does not parse
+      XML on any request path. Not exploitable as deployed. Tracked for removal
+      when the pinned base picks up libexpat 2.8.5-r0.
+    expired_at: 2026-10-27

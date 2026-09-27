@@ -5,6 +5,13 @@ on:
     tags:
       - 'v*'
 
+# Two releases racing on the same :latest tag would interleave their pushes.
+# Serialise per tag rather than cancelling: an in-flight publish that gets
+# killed half way leaves a tag pointing at an image that was never completed.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 # Least privilege default; the job that creates the release widens it explicitly.
 permissions:
   contents: read
@@ -14,9 +21,22 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  # A tag is not a test result. Without this job the publishing step below had
+  # no `needs:` at all, so a `v*` tag pushed at a red main would push images to
+  # GHCR with no lint, no tests, no Trivy and no kubeconform. This reuses ci.yml
+  # verbatim, which is the point: the checks that gate a PR are the checks that
+  # gate a publish.
+  test:
+    name: Full Test Suite
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+    secrets: inherit
+
   build-push-release:
     name: Build & Push Release Images
     runs-on: ubuntu-latest
+    needs: test
     permissions:
       packages: write
       contents: read
@@ -28,8 +48,10 @@ jobs:
         id: version
         run: echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
 
-      # There is no frontend/ directory yet; without this guard the release run
-      # dies on a missing Docker build context.
+      # frontend/ is present in the tree. This guard is kept because a release
+      # must not half-publish if the frontend is ever genuinely absent, but the
+      # comment above it used to assert the directory was missing, which has
+      # been false since the frontend landed.
       - name: Check frontend exists
         id: check-frontend
         run: |
@@ -49,6 +71,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GHCR_TOKEN }}
 
+      # The commit SHA is pushed alongside the semver tag. Without it `v1.2.3`
+      # is a floating label with no recorded link to a commit, and the :latest
+      # tag it also moves is overwritten by the next cd.yml run, so nothing
+      # downstream can say which build a given release was.
       - name: Build & push backend
         uses: docker/build-push-action@v5
         with:
@@ -56,6 +82,7 @@ jobs:
           push: true
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-backend:${{ steps.version.outputs.version }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-backend:${{ github.sha }}
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-backend:latest
 
       - name: Build & push frontend
@@ -66,6 +93,7 @@ jobs:
           push: true
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-frontend:${{ steps.version.outputs.version }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-frontend:${{ github.sha }}
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-frontend:latest
 
       - name: Report skipped frontend image
@@ -126,7 +154,10 @@ jobs:
             }
             return commits.map(c => `- ${c.commit.message.split('\n')[0]}`).join('\n');
 
-      # Pinned to an immutable tag: @v1 is a floating major ref.
+      # softprops/action-gh-release requires a GITHUB_TOKEN regardless of whether
+      # the action is pinned; the pinning to a version (rather than @v1) only
+      # narrows it to a minor line. It is a mutable git tag, not a commit SHA,
+      # so it is not the immutability guarantee and is not presented as one.
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2.2.2
         with:

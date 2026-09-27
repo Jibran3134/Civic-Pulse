@@ -52,16 +52,10 @@ spec:
                 configMapKeyRef:
                   name: civicpulse-config
                   key: TRIAGE_PROVIDER
-            - name: OLLAMA_BASE_URL
-              valueFrom:
-                configMapKeyRef:
-                  name: civicpulse-config
-                  key: OLLAMA_BASE_URL
-            - name: OLLAMA_MODEL
-              valueFrom:
-                configMapKeyRef:
-                  name: civicpulse-config
-                  key: OLLAMA_MODEL
+            # OLLAMA_BASE_URL / OLLAMA_MODEL are intentionally not injected.
+            # No Ollama workload exists in this cluster, so those keys pointed at
+            # a DNS name that resolves to nothing. Settings has defaults for
+            # both, so the pod starts cleanly. See k8s/base/configmap.yaml.
             - name: STATS_CACHE_TTL
               valueFrom:
                 configMapKeyRef:

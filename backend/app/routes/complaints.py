@@ -1,6 +1,7 @@
 import uuid
 from datetime import datetime
 from typing import Any
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field, field_validator
@@ -10,7 +11,8 @@ from app.core.logging import get_logger
 from app.providers.cache import CacheProvider, RateLimiterProvider
 from app.providers.triage.base import Category, Priority
 from app.repositories.complaints import ComplaintsRepository
-from app.services.status_machine import VALID_TRANSITIONS, Status
+from app.services.statistics import STATS_CACHE_KEY
+from app.services.status_machine import Status, allowed_transitions, is_valid_transition
 from app.services.triage import TriageService
 
 logger = get_logger(__name__)
@@ -20,7 +22,7 @@ router = APIRouter()
 # Shared by the writer and the reader of the stats cache. Both sides must
 # agree on this string: the cache is only invalidated correctly if the key
 # written in stats.py is the key deleted here.
-STATS_CACHE_KEY = "stats:aggregates"
+# Imported from app.services.statistics: one definition, two readers.
 
 
 class ComplaintCreate(BaseModel):
@@ -155,10 +157,18 @@ async def create_complaint(
             headers={"Retry-After": str(retry_after)},
         )
 
+    # Mint the id here rather than letting the column default generate it.
+    # Triage runs before the INSERT, so a server-generated id would not exist at
+    # the moment a provider fails and the fallback WARNING is emitted -- and that
+    # log would carry "pre-persist" instead of the complaint it belongs to.
+    complaint_id = str(uuid4())
     triage_service = TriageService()
-    triage_result = await triage_service.triage(complaint.text, complaint.location)
+    triage_result = await triage_service.triage(
+        complaint.text, complaint.location, complaint_id=complaint_id
+    )
 
     created = await repo.create(
+        complaint_id=complaint_id,
         text=complaint.text,
         location=complaint.location,
         reporter_contact=complaint.reporter_contact,
@@ -249,8 +259,12 @@ async def update_complaint_status(
     # services/status_machine.py, not a chain of ifs. 409, and the message
     # names the attempted transition and the legal ones, so the operator UI can
     # show the server's reason verbatim instead of a generic "error".
-    if new_status not in VALID_TRANSITIONS.get(current_status, set()):
-        allowed = sorted(s.value for s in VALID_TRANSITIONS.get(current_status, set()))
+    #
+    # Both helpers are called rather than re-deriving from VALID_TRANSITIONS
+    # here, so the table has exactly one reader. This route previously
+    # duplicated the lookup while is_valid_transition() sat unused.
+    if not is_valid_transition(current_status, new_status):
+        allowed = sorted(s.value for s in allowed_transitions(current_status))
         detail = f"Invalid status transition from {current_status.value} to {new_status.value}."
         if allowed:
             detail += f" Allowed from {current_status.value}: {', '.join(allowed)}."

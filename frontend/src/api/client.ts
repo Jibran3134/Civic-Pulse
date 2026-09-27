@@ -3,6 +3,7 @@ import {
   ComplaintCreate,
   ComplaintListResponse,
   ProviderMetaResponse,
+  StatusTransitionsResponse,
   StatsResponse,
   Status,
 } from '../types'
@@ -108,6 +109,11 @@ export const api = {
 
   async getProvidersMeta(): Promise<ProviderMetaResponse> {
     const { data } = await request<ProviderMetaResponse>('/meta/providers')
+    return data
+  },
+
+  async getStatusTransitions(): Promise<StatusTransitionsResponse> {
+    const { data } = await request<StatusTransitionsResponse>('/meta/status-transitions')
     return data
   },
 }
