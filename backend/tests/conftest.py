@@ -23,6 +23,8 @@ from httpx import ASGITransport, AsyncClient
 from app.core.config import get_settings
 from app.main import app
 
+_redis_reachable: bool | None = None
+
 
 @pytest_asyncio.fixture
 async def client():
@@ -83,10 +85,18 @@ async def isolate_shared_redis_state():
         for provider in (get_cache_provider(), get_rate_limiter()):
             provider._client = None
 
+    global _redis_reachable
+    if _redis_reachable is False:
+        yield
+        return
+
     try:
         redis = await get_redis_client()
+        await redis.ping()
+        _redis_reachable = True
     except Exception:
         # No Redis reachable: the unit tests still need to run.
+        _redis_reachable = False
         yield
         return
 

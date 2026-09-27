@@ -40,6 +40,39 @@ class Settings(BaseSettings):
 
     stats_cache_ttl_seconds: int = Field(default=30, validation_alias="STATS_CACHE_TTL")
 
+    # ---------------------------------------------------------------------------
+    # Triage provider configuration (§2.5 items 2-3-5)
+    # Both LLMTriage (Groq) and OllamaTriage read these so the values cannot
+    # drift apart.  TRIAGE_TIMEOUT is hard-capped at 10 s by the assignment
+    # spec; TRIAGE_MAX_RETRIES must be >= 0.
+    # ---------------------------------------------------------------------------
+    ollama_base_url: str = Field(
+        default="http://localhost:11434",
+        validation_alias="OLLAMA_BASE_URL",
+    )
+    ollama_model: str = Field(
+        default="llama3.2:1b",
+        validation_alias="OLLAMA_MODEL",
+    )
+    triage_timeout: float = Field(
+        default=10.0,
+        validation_alias="TRIAGE_TIMEOUT",
+        le=10.0,
+    )
+    triage_max_retries: int = Field(
+        default=1,
+        validation_alias="TRIAGE_MAX_RETRIES",
+        ge=0,
+    )
+    triage_retry_base_delay: float = Field(
+        default=0.5,
+        validation_alias="TRIAGE_RETRY_BASE_DELAY",
+    )
+    triage_cache_ttl_hours: int = Field(
+        default=24,
+        validation_alias="TRIAGE_CACHE_TTL_HOURS",
+    )
+
     @property
     def cors_origins(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins_raw.split(",") if origin.strip()]

@@ -40,14 +40,17 @@ class LLMTriage(TriageProvider):
         api_key: str | None = None,
         model: str = "llama-3.1-8b-instant",
         base_url: str = "https://api.groq.com/openai/v1",
-        timeout: float = 10.0,
+        timeout: float | None = None,
     ):
         settings = get_settings()
         self.api_key = api_key or settings.groq_api_key or os.getenv("GROQ_API_KEY", "")
         self.model = model
         self.base_url = base_url.rstrip("/")
-        # Hard cap: 10s timeout on every call (§2.5 item 2)
-        self.timeout = timeout
+        # Hard cap: 10 s timeout on every call (§2.5 item 2); read from settings
+        # so the value is testable and consistent with OllamaTriage.
+        self.timeout = timeout if timeout is not None else settings.triage_timeout
+        self._max_retries = settings.triage_max_retries
+        self._retry_base_delay = settings.triage_retry_base_delay
 
     def _build_prompt(self, text: str, location: str) -> list[dict[str, str]]:
         clean_text = redact_pii(text)
@@ -183,27 +186,35 @@ class LLMTriage(TriageProvider):
         messages = self._build_prompt(text, location)
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
-            try:
-                # First attempt
-                content = await self._execute_call(client, messages)
-                return self._validate_and_parse(content)
-            except (httpx.TimeoutException, httpx.HTTPStatusError) as e:
-                # Retry once with jitter on timeout, 429, and 5xx only. Never on 400.
-                is_timeout = isinstance(e, httpx.TimeoutException)
-                is_retryable_status = (
-                    isinstance(e, httpx.HTTPStatusError)
-                    and (e.response.status_code == 429 or 500 <= e.response.status_code < 600)
-                )
-
-                if is_timeout or is_retryable_status:
-                    # Jitter between 0.2 and 0.6 seconds
-                    jitter_sec = 0.2 + random.uniform(0.05, 0.4)
-                    logger.warning(
-                        f"Groq call failed with retryable error ({e}), retrying once after {jitter_sec:.2f}s"
-                    )
-                    await asyncio.sleep(jitter_sec)
+            last_exc: Exception | None = None
+            for attempt in range(self._max_retries + 1):
+                try:
                     content = await self._execute_call(client, messages)
                     return self._validate_and_parse(content)
+                except (httpx.TimeoutException, httpx.HTTPStatusError) as e:
+                    # Retry only on timeout, 429, and 5xx. Never on 400/401/403.
+                    is_timeout = isinstance(e, httpx.TimeoutException)
+                    is_retryable_status = (
+                        isinstance(e, httpx.HTTPStatusError)
+                        and (e.response.status_code == 429 or 500 <= e.response.status_code < 600)
+                    )
+                    if not (is_timeout or is_retryable_status):
+                        raise
 
-                # Not retryable (e.g. 400, 401, 403)
-                raise
+                    last_exc = e
+                    if attempt < self._max_retries:
+                        # Jitter: base_delay ± 40 %
+                        jitter_sec = self._retry_base_delay * (0.6 + random.uniform(0.0, 0.8))
+                        logger.warning(
+                            "Groq call failed, retrying",
+                            extra={
+                                "attempt": attempt + 1,
+                                "max_retries": self._max_retries,
+                                "error": str(e),
+                                "delay_s": round(jitter_sec, 3),
+                            },
+                        )
+                        await asyncio.sleep(jitter_sec)
+
+            # All retries exhausted
+            raise last_exc  # type: ignore[misc]

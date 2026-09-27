@@ -417,3 +417,73 @@ class TestFactoryProviders:
         # Default fallback
         assert get_triage_provider("unknown_val").name == "simulated"
 
+
+class TestLLMGroqCoverageGaps:
+    """Cover the five previously-uncovered lines in llm_groq.py."""
+
+    # Line 117: non-dict JSON output
+    def test_non_dict_json_raises_value_error(self):
+        llm = LLMTriage(api_key="test-key")
+        # A JSON array is valid JSON but not an object
+        with pytest.raises(ValueError, match="Model output is not a JSON object"):
+            llm._validate_and_parse("[1, 2, 3]")
+
+    # Line 131: summary >140 chars is truncated to exactly 140
+    def test_summary_truncated_over_140_chars(self):
+        llm = LLMTriage(api_key="test-key")
+        long_summary = "z" * 200
+        payload = json.dumps({
+            "category": "other",
+            "priority": "low",
+            "summary": long_summary,
+            "confidence": 0.5,
+        })
+        result = llm._validate_and_parse(payload)
+        assert len(result.summary) == 140
+        assert result.summary.endswith("...")
+
+    # Line 175: empty choices list in Groq API response
+    @pytest.mark.asyncio
+    async def test_empty_choices_raises_value_error(self):
+        llm = LLMTriage(api_key="test-key")
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"choices": []}
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_response):
+            with pytest.raises(ValueError, match="No choices in Groq API response"):
+                await llm.triage("Water leak", "Lahore")
+
+    # Line 182: missing GROQ_API_KEY
+    @pytest.mark.asyncio
+    async def test_missing_api_key_raises_value_error(self):
+        llm = LLMTriage(api_key="")
+        with pytest.raises(ValueError, match="GROQ_API_KEY is not configured"):
+            await llm.triage("Water leak", "Lahore")
+
+    # Line 190: happy path through _execute_call → _validate_and_parse
+    @pytest.mark.asyncio
+    async def test_happy_path_end_to_end_mocked(self):
+        llm = LLMTriage(api_key="test-key")
+        payload = {
+            "category": "electricity",
+            "priority": "normal",
+            "summary": "Transformer tripped near school",
+            "confidence": 0.88,
+        }
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": json.dumps(payload)}}]
+        }
+
+        with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_response):
+            result = await llm.triage("Transformer tripped near school", "Lahore")
+
+        assert result.category == Category.ELECTRICITY
+        assert result.priority == Priority.NORMAL
+        assert result.summary == "Transformer tripped near school"
+        assert result.confidence == pytest.approx(0.88)
+
