@@ -13,6 +13,9 @@ import {
   ArrowRight,
   XCircle,
 } from 'lucide-react'
+import { CategoryBadge } from './CategoryBadge'
+import { PriorityBadge } from './PriorityBadge'
+import { StatusBadge } from './StatusBadge'
 
 export const DashboardView: React.FC = () => {
   const [complaints, setComplaints] = useState<Complaint[]>([])
@@ -260,21 +263,15 @@ export const DashboardView: React.FC = () => {
                   </td>
 
                   <td>
-                    <span className={`badge badge-category badge-${c.category}`}>
-                      {c.category}
-                    </span>
+                    <CategoryBadge category={c.category} />
                   </td>
 
                   <td>
-                    <span className={`badge badge-priority badge-${c.priority}`}>
-                      {c.priority}
-                    </span>
+                    <PriorityBadge priority={c.priority} />
                   </td>
 
                   <td>
-                    <span className={`badge badge-status badge-status-${c.status}`}>
-                      {c.status}
-                    </span>
+                    <StatusBadge status={c.status} />
                   </td>
 
                   <td>
