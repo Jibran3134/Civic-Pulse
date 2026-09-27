@@ -232,29 +232,53 @@ COMPLAINTS = [
 ]
 
 
-async def seed():
-    try:
-        conn = await psycopg.AsyncConnection.connect(
-            settings.database_url.replace("postgresql+asyncpg://", "postgresql+psycopg://"),
-            row_factory=dict_row,
-            autocommit=True,
-        )
+SEED_MARKER = "seed"
 
-        async with conn.cursor() as cur:
-            # Check if already seeded
-            await cur.execute("SELECT COUNT(*) as count FROM complaints")
-            result = await cur.fetchone()
-            if result["count"] > 0:
-                logger.info(f"Database already seeded with {result['count']} complaints")
+
+async def seed() -> None:
+    """Load the demo dataset, idempotently.
+
+    Idempotency here is content-based, not count-based. The previous version
+    returned early if the table held ANY row, so a single user-created complaint
+    permanently blocked the seed: the dashboard stayed near-empty and the demo
+    became unwatchable, with no way to recover except dropping the volume.
+    Instead each seeded row is identified by its own text plus the `seed` marker
+    in triaged_by, and only the genuinely missing rows are inserted. Running
+    this twice inserts nothing the second time, which is the property that
+    actually matters.
+
+    Note the absence of ON CONFLICT DO NOTHING: there is no unique constraint
+    on `complaints` for it to act on, so it was a no-op that read as protection.
+    The existence check below is what makes the insert idempotent.
+
+    The inserts run inside one explicit transaction. With autocommit the
+    connection commits each row separately, so a failure halfway through left a
+    partially seeded database -- and the count guard would then refuse to ever
+    finish the job.
+    """
+    conn = await psycopg.AsyncConnection.connect(
+        settings.database_url.replace("postgresql+asyncpg://", "postgresql+psycopg://"),
+        row_factory=dict_row,
+    )
+    try:
+        async with conn.transaction(), conn.cursor() as cur:
+            await cur.execute(
+                "SELECT text FROM complaints WHERE triaged_by = %s",
+                (SEED_MARKER,),
+            )
+            existing = {row["text"] for row in await cur.fetchall()}
+
+            missing = [c for c in COMPLAINTS if c[0] not in existing]
+            if not missing:
+                logger.info("Seed already applied; nothing to do", extra={"rows": len(existing)})
                 return
 
-            for text, location, contact, category, priority in COMPLAINTS:
+            for text, location, contact, category, priority in missing:
                 await cur.execute(
                     """
                     INSERT INTO complaints (text, location, reporter_contact, category, priority,
                                             ai_summary, triaged_by, triage_latency_ms, status)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'open')
-                    ON CONFLICT DO NOTHING
                     """,
                     (
                         text,
@@ -263,21 +287,23 @@ async def seed():
                         category,
                         priority,
                         f"Auto-seeded: {text[:100]}",
-                        "seed",
+                        SEED_MARKER,
                         0,
                     ),
                 )
 
-            await cur.execute("SELECT COUNT(*) as count FROM complaints")
-            result = await cur.fetchone()
-            logger.info(f"Seeded {result['count']} complaints")
-
-    except Exception as e:
-        logger.error(f"Seed failed: {e}")
-        raise
+            await cur.execute("SELECT COUNT(*) as total FROM complaints")
+            total = (await cur.fetchone())["total"]
+            logger.info(
+                "Seed applied",
+                extra={
+                    "inserted": len(missing),
+                    "skipped": len(COMPLAINTS) - len(missing),
+                    "total": total,
+                },
+            )
     finally:
-        if "conn" in locals():
-            await conn.close()
+        await conn.close()
 
 
 if __name__ == "__main__":
