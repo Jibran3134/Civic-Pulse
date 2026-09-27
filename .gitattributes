@@ -1,0 +1,17 @@
+# Shell scripts MUST be LF. A CRLF .sh file is a hard syntax error on Linux --
+# bash reads the carriage return as part of the token, so `cleanup() {` becomes
+# `cleanup() {\r` and the script fails to parse at all. Windows checkouts will
+# otherwise reintroduce CRLF silently, which is exactly how a demo script that
+# "worked on my machine" reaches CI and dies.
+*.sh text eol=lf
+
+# Keep the demo's own line endings stable too, so a Windows editor cannot turn
+# a k6 script into a diff full of ^M noise.
+load/*.js text eol=lf
+
+# NOTE: the Python sources in this repository are currently CRLF. Python
+# tolerates CRLF transparently, so this is cosmetic rather than a correctness
+# problem, and renormalising every file would produce a large diff that
+# collides with work in flight on other branches. When the tree is quiet, run
+# `git add --renormalize .` together with `* text=auto eol=lf` above to
+# standardise on LF.
