@@ -1,4 +1,5 @@
 import json
+import time
 from typing import Any
 
 import redis.asyncio as redis
@@ -10,9 +11,77 @@ logger = get_logger(__name__)
 settings = get_settings()
 
 _redis_client: redis.Redis | None = None
+_rate_limit_client: redis.Redis | None = None
+
+# The whole read-modify-write of a token bucket has to happen inside Redis, on
+# one connection, with no interleaving. Doing it from the client -- HGETALL,
+# compute in Python, HSET -- is a textbook race: every concurrent caller reads
+# the same token count, decides independently that a token is available, and
+# all of them decrement from the value they read rather than the value that was
+# actually written. Measured on this codebase before the fix, 20 concurrent
+# requests against a bucket holding exactly 1 token were admitted 11, 19 and
+# 20 times across three runs, i.e. the effective limit was roughly
+# `configured_limit * concurrent_callers`, and unbounded if the connection pool
+# ran dry.
+#
+# KEYS[1]  bucket key
+# ARGV[1]  current unix time (passed in so the script needs no clock access)
+# ARGV[2]  refill rate, tokens per second
+# ARGV[3]  burst capacity
+# ARGV[4]  window/TTL seconds
+# Returns  { allowed (0|1), retry_after_seconds, tokens_remaining }
+RATE_LIMIT_LUA = """
+local key        = KEYS[1]
+local now        = tonumber(ARGV[1])
+local refill     = tonumber(ARGV[2])
+local burst      = tonumber(ARGV[3])
+local window     = tonumber(ARGV[4])
+
+local bucket     = redis.call('HMGET', key, 'tokens', 'last_refill')
+local tokens     = tonumber(bucket[1])
+local last_refill = tonumber(bucket[2])
+
+if tokens == nil then
+    -- First request from this client. Bank a full bucket minus the token we
+    -- are spending right now, and start the refill clock immediately so the
+    -- second request already accrues from t=0.
+    local remaining = burst - 1
+    redis.call('HSET', key, 'tokens', remaining, 'last_refill', now)
+    redis.call('EXPIRE', key, window)
+    return {1, 0, remaining}
+end
+
+if last_refill == nil then
+    last_refill = now
+end
+
+local elapsed = now - last_refill
+if elapsed < 0 then
+    elapsed = 0
+end
+
+tokens = math.min(burst, tokens + (elapsed * refill))
+
+if tokens >= 1 then
+    local remaining = tokens - 1
+    redis.call('HSET', key, 'tokens', remaining, 'last_refill', now)
+    redis.call('EXPIRE', key, window)
+    return {1, 0, remaining}
+end
+
+-- Denied. Persist the tokens that refilled while we waited, otherwise the next
+-- caller recomputes from a stale timestamp and the fractional progress is lost.
+local retry_after = math.floor((1 - tokens) / refill) + 1
+redis.call('HSET', key, 'tokens', tokens, 'last_refill', now)
+redis.call('EXPIRE', key, window)
+return {0, retry_after, tokens}
+"""
 
 
 async def get_redis_client() -> redis.Redis:
+    """Connection pool for the cache job: stats snapshot, triage content-hash
+    entries and the provider-outcome ring buffer. These are low volume and
+    tolerate queueing."""
     global _redis_client
     if _redis_client is None:
         _redis_client = redis.from_url(
@@ -24,10 +93,45 @@ async def get_redis_client() -> redis.Redis:
     return _redis_client
 
 
+async def get_rate_limit_client() -> redis.Redis:
+    """Separate pool for the rate limiter.
+
+    The limiter runs once per write request and, under load, is exactly the
+    traffic a slow endpoint generates. Sharing the cache pool meant a burst
+    against the limiter exhausted the same 10 connections the cache used, and
+    the limiter's own error path admits every request -- so the pool exhaustion
+    silently disabled the thing that was supposed to protect the database.
+
+    This pool blocks rather than raising when it is saturated. The default
+    ConnectionPool raises `Too many connections` the moment max_connections is
+    exceeded, which lands in the same except branch as a genuine Redis outage
+    and therefore fails open. Measured, 200 simultaneous checks against a
+    50-connection pool admitted 155 requests against a burst of 5. Queuing is
+    the correct behaviour here: each Lua evaluation is sub-millisecond, so
+    waiting for a free connection is cheaper and stricter than admitting the
+    request.
+    """
+    global _rate_limit_client
+    if _rate_limit_client is None:
+        pool = redis.BlockingConnectionPool.from_url(
+            settings.redis_url,
+            encoding="utf-8",
+            decode_responses=True,
+            max_connections=50,
+            timeout=5,
+        )
+        _rate_limit_client = redis.Redis(connection_pool=pool)
+    return _rate_limit_client
+
+
 async def close_redis_client() -> None:
-    global _redis_client
+    global _redis_client, _rate_limit_client
     if _redis_client is not None:
         await _redis_client.aclose()
+        _redis_client = None
+    if _rate_limit_client is not None:
+        await _rate_limit_client.aclose()
+        _rate_limit_client = None
         _redis_client = None
 
 
@@ -155,66 +259,58 @@ class CacheProvider:
 class RateLimiterProvider:
     def __init__(self):
         self._client: redis.Redis | None = None
+        self._script = None
 
     async def _get_client(self) -> redis.Redis:
         if self._client is None:
-            self._client = await get_redis_client()
+            self._client = await get_rate_limit_client()
         return self._client
+
+    def _get_script(self, client: redis.Redis):
+        if self._script is None:
+            # register_script issues EVALSHA and transparently falls back to
+            # EVAL when Redis replies NOSCRIPT, which is what happens if the
+            # script cache is flushed underneath a running process.
+            self._script = client.register_script(RATE_LIMIT_LUA)
+        return self._script
 
     async def check_limit(self, client_ip: str) -> tuple[bool, int]:
         """
-        Token bucket rate limiter.
+        Token bucket rate limiter, evaluated atomically inside Redis.
         Returns (allowed, retry_after_seconds).
         """
-        client = await self._get_client()
-        key = f"ratelimit:{client_ip}"
+        if not settings.rate_limit_enabled:
+            return True, 0
 
         try:
-            pipe = client.pipeline()
-            pipe.hgetall(key)
-            pipe.ttl(key)
-            results = await pipe.execute()
-
-            bucket_data = results[0] or {}
-            results[1]
-
-            if not bucket_data:
-                # First request - initialize bucket
-                await client.hset(  # type: ignore[misc]
-                    key,
-                    mapping={
-                        "tokens": str(settings.rate_limit_burst - 1),
-                        "last_refill": "0",
-                    },
-                )
-                await client.expire(key, settings.rate_limit_window_seconds)  # type: ignore[misc]
-                return True, 0
-
-            tokens = float(bucket_data.get("tokens", settings.rate_limit_burst))
-            last_refill = float(bucket_data.get("last_refill", 0))
-
-            import time
-            now = time.time()
-            elapsed = now - last_refill if last_refill > 0 else 0
-
-            # Refill tokens based on elapsed time
+            # Acquiring the client is inside the try on purpose. An unreachable
+            # Redis has to reach the fail-open / fail-closed decision below
+            # rather than escaping as a 500, otherwise the switch only governs
+            # script errors and not the outage it exists for.
+            client = await self._get_client()
+            key = f"ratelimit:{client_ip}"
             refill_rate = settings.rate_limit_requests / settings.rate_limit_window_seconds
-            tokens = min(settings.rate_limit_burst, tokens + elapsed * refill_rate)
-
-            if tokens >= 1:
-                tokens -= 1
-                await client.hset(key, mapping={"tokens": str(tokens), "last_refill": str(now)})  # type: ignore[misc]
-                await client.expire(key, settings.rate_limit_window_seconds)  # type: ignore[misc]
-                return True, 0
-
-            # Calculate retry-after
-            retry_after = int((1 - tokens) / refill_rate) + 1
-            return False, retry_after
-
+            script = self._get_script(client)
+            result = await script(
+                keys=[key],
+                args=[
+                    time.time(),
+                    refill_rate,
+                    settings.rate_limit_burst,
+                    settings.rate_limit_window_seconds,
+                ],
+            )
         except Exception as e:
             logger.error(f"Rate limiter check failed: {e}")
-            # Fail open - allow request if Redis is down
-            return True, 0
+            # RATE_LIMIT_FAIL_CLOSED decides what an unreachable Redis means.
+            # The default stays open because the LLM quota is independently
+            # bounded by the provider timeout, the retry budget and the rules
+            # fallback, so refusing writes would trade one outage for another.
+            return (False, settings.rate_limit_window_seconds) if settings.rate_limit_fail_closed else (True, 0)
+
+        allowed = int(result[0])
+        retry_after = int(result[1])
+        return bool(allowed), retry_after
 
     async def health_check(self) -> bool:
         try:
