@@ -268,7 +268,7 @@ jobs:
       # Pinned to an immutable tag: @master is a floating ref, so a compromised or
       # simply-upstream-modified action can change what CI executes without a commit.
       - name: Trivy scan (backend)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.28.0
         with:
           scan-type: "image"
           scan-ref: "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-backend:${{ github.sha }}"
@@ -292,7 +292,7 @@ jobs:
 
       - name: Trivy scan (frontend)
         if: ${{ steps.check-frontend.outputs.exists == 'true' }}
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.28.0
         with:
           scan-type: "image"
           scan-ref: "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-frontend:${{ github.sha }}"

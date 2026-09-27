@@ -98,12 +98,18 @@ class CacheProvider:
         """Get range of values from list."""
         client = await self._get_client()
         try:
-            raw_items = await client.lrange(key, start, stop)
+            # redis-py's stubs type lrange as returning `Awaitable[list] | list`
+            # because the same method name exists on the sync client. Going
+            # through one untyped reference is clearer than a per-line ignore.
+            call: Any = client.lrange
+            raw_items = await call(key, start, stop)
             items = []
             for item in raw_items:
                 try:
                     items.append(json.loads(item))
                 except Exception:
+                    # Not every list element has to be JSON; pass it through
+                    # rather than failing the whole read.
                     items.append(item)
             return items
         except Exception as e:
