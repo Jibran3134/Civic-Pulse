@@ -16,11 +16,19 @@ RUN npm run build
 # Runtime Stage: Serve static assets with Nginx
 FROM nginx:1.27-alpine AS runtime
 
+# Set up non-root execution: remove user directive, create pid file, assign ownership to nginx user (UID 101)
+RUN sed -i '/user  nginx;/d' /etc/nginx/nginx.conf && \
+    touch /run/nginx.pid && \
+    chown -R nginx:nginx /run/nginx.pid /var/cache/nginx /var/log/nginx /etc/nginx/conf.d /usr/share/nginx/html
+
 # Copy custom nginx reverse-proxy configuration
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY --chown=nginx:nginx nginx.conf /etc/nginx/conf.d/default.conf
 
 # Copy compiled static assets from builder stage
-COPY --from=builder /app/dist /usr/share/nginx/html
+COPY --from=builder --chown=nginx:nginx /app/dist /usr/share/nginx/html
+
+# Switch to non-root USER (§3.1 and Rubric G)
+USER nginx
 
 # Expose port 80
 EXPOSE 80
