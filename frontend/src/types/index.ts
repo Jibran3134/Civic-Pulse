@@ -1,8 +1,9 @@
-export type Category = 'water' | 'electricity' | 'waste' | 'roads' | 'other'
+// These enums MUST match the backend database schema exactly (status_machine.py + DB column enums)
+export type Category = 'water' | 'electricity' | 'sanitation' | 'roads' | 'streetlights' | 'other'
 
-export type Priority = 'critical' | 'high' | 'medium' | 'low'
+export type Priority = 'high' | 'normal' | 'low'
 
-export type Status = 'new' | 'triaged' | 'in_progress' | 'resolved' | 'rejected'
+export type Status = 'open' | 'in_progress' | 'resolved' | 'rejected'
 
 export interface ComplaintCreate {
   text: string
