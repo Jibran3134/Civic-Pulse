@@ -22,11 +22,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from app.providers.triage.base import Category, Priority, TriageResult
+from app.providers.triage.base import Category, Priority
 from app.providers.triage.ollama import OllamaTriage
-from app.providers.triage.rules import RuleBasedTriage
 from app.services.triage import TriageService
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -95,7 +93,7 @@ class TestOllamaHappyPath:
         }
 
         transport = httpx.MockTransport(
-            lambda req: _success_response(payload)
+            lambda _req: _success_response(payload)
         )
         with patch("httpx.AsyncClient", return_value=httpx.AsyncClient(transport=transport)):
             result = await provider.triage("Water main burst", "Lahore")
@@ -119,7 +117,7 @@ class TestOllamaHappyPath:
         body = json.dumps({"response": fenced})
 
         transport = httpx.MockTransport(
-            lambda req: httpx.Response(
+            lambda _req: httpx.Response(
                 200, content=body.encode(), headers={"content-type": "application/json"}
             )
         )
@@ -137,7 +135,7 @@ class TestOllamaHappyPath:
             "summary": "Open manhole",
             "confidence": -0.5,
         }
-        transport = httpx.MockTransport(lambda req: _success_response(payload))
+        transport = httpx.MockTransport(lambda _req: _success_response(payload))
         with patch("httpx.AsyncClient", return_value=httpx.AsyncClient(transport=transport)):
             result = await provider.triage("Open manhole", "Lahore")
         assert result.confidence == pytest.approx(0.0)
@@ -151,7 +149,7 @@ class TestOllamaHappyPath:
             "summary": "Exposed wire",
             "confidence": 1.8,
         }
-        transport = httpx.MockTransport(lambda req: _success_response(payload))
+        transport = httpx.MockTransport(lambda _req: _success_response(payload))
         with patch("httpx.AsyncClient", return_value=httpx.AsyncClient(transport=transport)):
             result = await provider.triage("Live wire", "Lahore")
         assert result.confidence == pytest.approx(1.0)
@@ -166,7 +164,7 @@ class TestOllamaHappyPath:
             "summary": long_summary,
             "confidence": 0.5,
         }
-        transport = httpx.MockTransport(lambda req: _success_response(payload))
+        transport = httpx.MockTransport(lambda _req: _success_response(payload))
         with patch("httpx.AsyncClient", return_value=httpx.AsyncClient(transport=transport)):
             result = await provider.triage("Something", "Lahore")
         assert len(result.summary) == 140
@@ -181,10 +179,12 @@ class TestOllamaHappyPath:
             "summary": "Unusual activity",
             "confidence": 0.9,
         }
-        transport = httpx.MockTransport(lambda req: _success_response(payload))
-        with patch("httpx.AsyncClient", return_value=httpx.AsyncClient(transport=transport)):
-            with pytest.raises(ValueError):
-                await provider.triage("Strange event", "Lahore")
+        transport = httpx.MockTransport(lambda _req: _success_response(payload))
+        with (
+            patch("httpx.AsyncClient", return_value=httpx.AsyncClient(transport=transport)),
+            pytest.raises(ValueError),
+        ):
+            await provider.triage("Strange event", "Lahore")
 
 
 # ---------------------------------------------------------------------------
@@ -203,14 +203,16 @@ class TestOllamaRetry:
 
         call_count = 0
 
-        async def mock_execute(client, text, location):
+        async def mock_execute(_client, _text, _location):
             nonlocal call_count
             call_count += 1
             raise httpx.TimeoutException("timed out")
 
-        with patch.object(provider, "_execute_call", side_effect=mock_execute):
-            with patch("asyncio.sleep", new_callable=AsyncMock):
-                result = await service.triage("Water main burst on road", "Lahore")
+        with (
+            patch.object(provider, "_execute_call", side_effect=mock_execute),
+            patch("asyncio.sleep", new_callable=AsyncMock),
+        ):
+            result = await service.triage("Water main burst on road", "Lahore")
 
         assert call_count == 2  # initial + 1 retry
         assert result.triaged_by == "rules:fallback"
@@ -226,14 +228,16 @@ class TestOllamaRetry:
 
         call_count = 0
 
-        async def mock_execute(client, text, location):
+        async def mock_execute(_client, _text, _location):
             nonlocal call_count
             call_count += 1
             raise httpx.HTTPStatusError("429", request=MagicMock(), response=mock_resp)
 
-        with patch.object(provider, "_execute_call", side_effect=mock_execute):
-            with patch("asyncio.sleep", new_callable=AsyncMock):
-                result = await service.triage("Electric outage near park", "Lahore")
+        with (
+            patch.object(provider, "_execute_call", side_effect=mock_execute),
+            patch("asyncio.sleep", new_callable=AsyncMock),
+        ):
+            result = await service.triage("Electric outage near park", "Lahore")
 
         assert call_count == 2
         assert result.triaged_by == "rules:fallback"
@@ -249,14 +253,16 @@ class TestOllamaRetry:
 
         call_count = 0
 
-        async def mock_execute(client, text, location):
+        async def mock_execute(_client, _text, _location):
             nonlocal call_count
             call_count += 1
             raise httpx.HTTPStatusError("503", request=MagicMock(), response=mock_resp)
 
-        with patch.object(provider, "_execute_call", side_effect=mock_execute):
-            with patch("asyncio.sleep", new_callable=AsyncMock):
-                result = await service.triage("Sewer blocked on street", "Lahore")
+        with (
+            patch.object(provider, "_execute_call", side_effect=mock_execute),
+            patch("asyncio.sleep", new_callable=AsyncMock),
+        ):
+            result = await service.triage("Sewer blocked on street", "Lahore")
 
         assert call_count == 2
         assert result.triaged_by == "rules:fallback"
@@ -272,15 +278,17 @@ class TestOllamaRetry:
 
         call_count = 0
 
-        async def mock_execute(client, text, location):
+        async def mock_execute(_client, _text, _location):
             nonlocal call_count
             call_count += 1
             # Simulate the 400 guard in _execute_call
             raise httpx.HTTPStatusError("400", request=MagicMock(), response=mock_resp)
 
-        with patch.object(provider, "_execute_call", side_effect=mock_execute):
-            with pytest.raises(httpx.HTTPStatusError):
-                await provider.triage("Test complaint", "Lahore")
+        with (
+            patch.object(provider, "_execute_call", side_effect=mock_execute),
+            pytest.raises(httpx.HTTPStatusError),
+        ):
+            await provider.triage("Test complaint", "Lahore")
 
         assert call_count == 1  # no retry
 
@@ -294,7 +302,7 @@ class TestOllamaRetry:
         bad_body = json.dumps({"response": "this is prose, not JSON {"})
 
         transport = httpx.MockTransport(
-            lambda req: httpx.Response(
+            lambda _req: httpx.Response(
                 200, content=bad_body.encode(), headers={"content-type": "application/json"}
             )
         )

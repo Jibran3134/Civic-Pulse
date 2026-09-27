@@ -451,9 +451,11 @@ class TestLLMGroqCoverageGaps:
         mock_response.json.return_value = {"choices": []}
         mock_response.raise_for_status = MagicMock()
 
-        with patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_response):
-            with pytest.raises(ValueError, match="No choices in Groq API response"):
-                await llm.triage("Water leak", "Lahore")
+        with (
+            patch("httpx.AsyncClient.post", new_callable=AsyncMock, return_value=mock_response),
+            pytest.raises(ValueError, match="No choices in Groq API response"),
+        ):
+            await llm.triage("Water leak", "Lahore")
 
     # Line 182: missing GROQ_API_KEY
     @pytest.mark.asyncio
