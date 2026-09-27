@@ -63,8 +63,20 @@ export interface ProviderMetaResponse {
   }
 }
 
-export interface ApiError {
-  detail: string
+/**
+ * The workflow state machine, served by the backend.
+ *
+ * The dashboard renders operator actions from this instead of hard-coding
+ * which button appears for which status. The assignment is explicit that valid
+ * transitions are decided by the backend and rendered by the frontend,
+ * "never duplicated in it" -- branching on the current status in JSX creates a
+ * second source of truth that silently rots when an edge is added server-side.
+ */
+export interface StatusTransitionsResponse {
+  transitions: Record<Status, Status[]>
+}
+
+export interface ApiError {  detail: string
   field_errors?: Record<string, string>
   status?: number
 }

@@ -17,6 +17,18 @@ import { CategoryBadge } from './CategoryBadge'
 import { PriorityBadge } from './PriorityBadge'
 import { StatusBadge } from './StatusBadge'
 
+/**
+ * Presentation only. Maps a status to the button text, and deliberately holds
+ * no transition information -- which statuses are reachable is fetched from the
+ * backend.
+ */
+const STATUS_ACTION_LABELS: Record<Status, string> = {
+  in_progress: 'In Progress',
+  resolved: 'Resolve',
+  rejected: 'Reject',
+  open: 'Reopen',
+}
+
 export const DashboardView: React.FC = () => {
   const [complaints, setComplaints] = useState<Complaint[]>([])
   const [total, setTotal] = useState(0)
@@ -32,6 +44,11 @@ export const DashboardView: React.FC = () => {
   const [conflictError, setConflictError] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
   const [updatingId, setUpdatingId] = useState<string | null>(null)
+  // Fetched from GET /api/meta/status-transitions. Empty until it arrives, so
+  // the first paint shows no action buttons rather than guessing at them.
+  const [transitions, setTransitions] = useState<Record<Status, Status[]>>(
+    {} as Record<Status, Status[]>
+  )
 
   const fetchComplaints = useCallback(async () => {
     setIsLoading(true)
@@ -61,6 +78,29 @@ export const DashboardView: React.FC = () => {
   useEffect(() => {
     fetchComplaints()
   }, [fetchComplaints])
+
+  // Load the workflow table once per mount. A failure here must not blank the
+  // dashboard: the list still renders, only the action buttons are missing,
+  // and the status select is still there as a fallback.
+  useEffect(() => {
+    let cancelled = false
+    // Wrapped in an async IIFE so a synchronous throw from the client is
+    // caught too. Chaining .catch() directly would not help: if the method is
+    // missing the TypeError happens before any promise exists, and it would
+    // escape into render as an unhandled rejection. The dashboard must survive
+    // a backend that predates this endpoint.
+    void (async () => {
+      try {
+        const data = await api.getStatusTransitions()
+        if (!cancelled) setTransitions(data.transitions)
+      } catch {
+        if (!cancelled) setTransitions({} as Record<Status, Status[]>)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const handleStatusChange = async (id: string, newStatus: Status) => {
     setConflictError(null)
@@ -296,26 +336,30 @@ export const DashboardView: React.FC = () => {
                         ))}
                       </select>
 
-                      {/* Fast-advance shortcuts matching backend state machine: open→in_progress→resolved */}
-                      {c.status === 'open' && (
+                      {/* Actions are rendered from the server's transition
+                          table rather than from a hard-coded rule. Nothing in
+                          this component decides which status may follow which;
+                          it asks the backend and draws what comes back. If the
+                          server adds an edge, the button appears here with no
+                          frontend change. */}
+                      {(transitions[c.status] ?? []).map((next) => (
                         <button
-                          className="btn-action-pill"
-                          title="Advance to in_progress"
+                          key={next}
+                          className={
+                            next === 'resolved'
+                              ? 'btn-action-pill btn-action-success'
+                              : 'btn-action-pill'
+                          }
+                          title={`Move to ${next.replace('_', ' ')}`}
                           disabled={updatingId === c.id}
-                          onClick={() => handleStatusChange(c.id, 'in_progress')}
+                          onClick={() => handleStatusChange(c.id, next)}
                         >
-                          In Progress <ArrowRight size={12} />
+                          {STATUS_ACTION_LABELS[next] ?? next}
+                          <ArrowRight size={12} />
                         </button>
-                      )}
-                      {c.status === 'in_progress' && (
-                        <button
-                          className="btn-action-pill btn-action-success"
-                          title="Advance to resolved"
-                          disabled={updatingId === c.id}
-                          onClick={() => handleStatusChange(c.id, 'resolved')}
-                        >
-                          Resolve <ArrowRight size={12} />
-                        </button>
+                      ))}
+                      {(transitions[c.status] ?? []).length === 0 && (
+                        <span className="text-muted">Terminal state</span>
                       )}
                     </div>
                   </td>

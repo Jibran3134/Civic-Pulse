@@ -6,6 +6,9 @@ import { api } from '../api/client'
 vi.mock('../api/client', () => ({
   api: {
     createComplaint: vi.fn(),
+    getStatusTransitions: vi.fn().mockResolvedValue({
+      transitions: {},
+    }),
   },
   ApiError: class extends Error {
     status: number

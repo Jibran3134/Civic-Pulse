@@ -10,7 +10,7 @@ from app.core.logging import get_logger
 from app.providers.cache import CacheProvider, RateLimiterProvider
 from app.providers.triage.base import Category, Priority
 from app.repositories.complaints import ComplaintsRepository
-from app.services.status_machine import VALID_TRANSITIONS, Status
+from app.services.status_machine import Status, allowed_transitions, is_valid_transition
 from app.services.triage import TriageService
 
 logger = get_logger(__name__)
@@ -249,8 +249,12 @@ async def update_complaint_status(
     # services/status_machine.py, not a chain of ifs. 409, and the message
     # names the attempted transition and the legal ones, so the operator UI can
     # show the server's reason verbatim instead of a generic "error".
-    if new_status not in VALID_TRANSITIONS.get(current_status, set()):
-        allowed = sorted(s.value for s in VALID_TRANSITIONS.get(current_status, set()))
+    #
+    # Both helpers are called rather than re-deriving from VALID_TRANSITIONS
+    # here, so the table has exactly one reader. This route previously
+    # duplicated the lookup while is_valid_transition() sat unused.
+    if not is_valid_transition(current_status, new_status):
+        allowed = sorted(s.value for s in allowed_transitions(current_status))
         detail = f"Invalid status transition from {current_status.value} to {new_status.value}."
         if allowed:
             detail += f" Allowed from {current_status.value}: {', '.join(allowed)}."
