@@ -30,10 +30,10 @@ describe('DashboardView 409 Conflict Error Surfacing', () => {
       text: 'Garbage dump near primary school unattended for 2 weeks',
       location: 'Rawalpindi Satellite Town',
       reporter_contact: null,
-      category: 'waste' as const,
-      priority: 'medium' as const,
-      status: 'new' as const,
-      ai_summary: 'Solid waste accumulation',
+      category: 'sanitation' as const,
+      priority: 'normal' as const,
+      status: 'open' as const,
+      ai_summary: 'Solid waste accumulation near school',
       triaged_by: 'simulated',
       triage_latency_ms: 150,
       created_at: new Date().toISOString(),
@@ -47,7 +47,9 @@ describe('DashboardView 409 Conflict Error Surfacing', () => {
       page_size: 10,
     })
 
-    const server409Message = 'Invalid status transition from new to resolved'
+    // UNIQUE backend error string to prove verbatim surfacing (not paraphrased)
+    const server409Message =
+      'Invalid status transition from open to resolved -- server-uuid-7f3a9b21'
     vi.mocked(api.updateComplaintStatus).mockRejectedValue(
       new ApiError(409, server409Message)
     )
@@ -63,11 +65,13 @@ describe('DashboardView 409 Conflict Error Surfacing', () => {
     )
     fireEvent.change(transitionSelect, { target: { value: 'resolved' } })
 
-    // Must surface the server's exact message verbatim
+    // Assert: the exact server string appears verbatim in the DOM
     await waitFor(() => {
-      const alertContainer = screen.getByRole('alert')
-      expect(alertContainer).toBeInTheDocument()
-      expect(screen.getByText(server409Message)).toBeInTheDocument()
+      const conflictDetail = screen.getByText(server409Message)
+      expect(conflictDetail).toBeInTheDocument()
+      const alertBanner = document.getElementById('server-conflict-alert')
+      expect(alertBanner).toBeInTheDocument()
+      expect(alertBanner).toContainElement(conflictDetail)
     })
   })
 })
