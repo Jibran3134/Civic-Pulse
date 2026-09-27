@@ -265,18 +265,44 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Pinned to an immutable tag: @master is a floating ref, so a compromised or
-      # simply-upstream-modified action can change what CI executes without a commit.
+      # The Trivy CLI is installed directly rather than through
+      # aquasecurity/trivy-action. That action is a composite action which in
+      # turn calls aquasecurity/setup-trivy, so pinning it is a two-variable
+      # problem: every trivy-action release also pins a setup-trivy version, and
+      # those have not always existed. v0.28.0 pins setup-trivy@v0.2.1, and
+      # v0.29.0/v0.30.0 pin v0.2.2 -- none of which setup-trivy ever published.
+      # v0.33.1 does resolve, but defaults to Trivy v0.65.0, which is not a
+      # released version either (releases jump v0.69.3 -> v0.70.0), so its
+      # installer fails at run time with no useful message. Two layers of
+      # somebody else's pinning strategy is two layers that can be wrong
+      # without a commit from us.
+      #
+      # Installing the binary ourselves means exactly one version is pinned, in
+      # one place, and the checksum is verified against the checksum file
+      # published alongside the release. This is also what the assignment asks
+      # for: a scan "with a fixed version available".
+      - name: Install Trivy
+        run: |
+          set -euo pipefail
+          TRIVY_VERSION=v0.74.0
+          TRIVY_SHA256=2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a
+          URL="https://github.com/aquasecurity/trivy/releases/download/${TRIVY_VERSION}/trivy_0.74.0_Linux-64bit.tar.gz"
+          curl -sfL --retry 3 -o trivy.tar.gz "$URL"
+          echo "${TRIVY_SHA256}  trivy.tar.gz" | sha256sum -c -
+          tar -xzf trivy.tar.gz trivy
+          sudo install -m 0755 trivy /usr/local/bin/trivy
+          trivy --version
+
       - name: Trivy scan (backend)
-        uses: aquasecurity/trivy-action@v0.33.1
-        with:
-          scan-type: "image"
-          scan-ref: "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-backend:${{ github.sha }}"
-          format: "table"
-          exit-code: "1"
-          ignore-unfixed: true
-          severity: "HIGH,CRITICAL"
-          vuln-type: "library"
+        run: |
+          set -euo pipefail
+          trivy image \
+            --exit-code 1 \
+            --severity HIGH,CRITICAL \
+            --vuln-type library \
+            --ignore-unfixed \
+            --scanners vuln \
+            "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-backend:${{ github.sha }}"
 
       - name: Build frontend
         id: build-frontend
@@ -292,15 +318,15 @@ jobs:
 
       - name: Trivy scan (frontend)
         if: ${{ steps.check-frontend.outputs.exists == 'true' }}
-        uses: aquasecurity/trivy-action@v0.33.1
-        with:
-          scan-type: "image"
-          scan-ref: "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-frontend:${{ github.sha }}"
-          format: "table"
-          exit-code: "1"
-          ignore-unfixed: true
-          severity: "HIGH,CRITICAL"
-          vuln-type: "library"
+        run: |
+          set -euo pipefail
+          trivy image \
+            --exit-code 1 \
+            --severity HIGH,CRITICAL \
+            --vuln-type library \
+            --ignore-unfixed \
+            --scanners vuln \
+            "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-frontend:${{ github.sha }}"
 
   manifests:
     name: Kubeconform Manifests
