@@ -7,18 +7,18 @@ from app.providers.triage.simulated import SimulatedTriage
 
 def get_triage_provider(provider_name: str | None = None) -> TriageProvider:
     settings = get_settings()
-    name = provider_name or settings.triage_provider
+    name = (provider_name or settings.triage_provider).strip().lower()
 
     if name == "simulated":
         return SimulatedTriage()
     elif name == "rules":
         return RuleBasedTriage()
-    elif name == "llm:groq":
+    elif name in ("llm", "llm:groq"):
         from app.providers.triage.llm_groq import LLMTriage
         return LLMTriage()
-    elif name == "llm:ollama":
+    elif name in ("ollama", "llm:ollama"):
         from app.providers.triage.ollama import OllamaTriage
         return OllamaTriage()
     else:
-        # Default to simulated for safety
+        # Default to simulated for safety in CI/unconfigured environments
         return SimulatedTriage()

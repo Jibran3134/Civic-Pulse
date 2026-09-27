@@ -29,17 +29,24 @@ Coupling business services, API routes, or databases to a specific AI vendor pro
 We implement an explicit **Interface / Protocol pattern** using Python's `typing.Protocol` and Pydantic v2:
 
 ```python
+class TriageResult(BaseModel):
+    category: Category
+    priority: Priority
+    summary: str = Field(max_length=140)
+    confidence: float = Field(ge=0.0, le=1.0)
+
 class TriageProvider(Protocol):
     name: str
     async def triage(self, text: str, location: str) -> TriageResult: ...
 ```
 
 Four distinct implementations conform to this protocol:
-1. `LLMTriage` (`llm:groq`): Production path calling Groq's `llama-3.1-8b-instant`.
-2. `OllamaTriage` (`llm:ollama`): Offline path running local `llama3.2:1b` container in Docker Compose.
+1. `LLMTriage` (canonical: `llm`, alias: `llm:groq`): Production path calling Groq's `llama-3.1-8b-instant`.
+2. `OllamaTriage` (canonical: `ollama`, alias: `llm:ollama`): Offline path running local `llama3.2:1b` container in Docker Compose.
 3. `RuleBasedTriage` (`rules`): Deterministic keyword fallback that always succeeds.
 4. `SimulatedTriage` (`simulated`): Deterministic fake for CI, supporting seeded responses and configurable failure injection.
 
+Operational metadata (`triaged_by`, `triage_latency_ms`) is encapsulated at the service level via `TriageOutcome(TriageResult)`.
 The active provider is chosen at runtime by the `TRIAGE_PROVIDER` environment variable via `get_triage_provider()`.
 
 ### Fault Isolation & Fallback Policy

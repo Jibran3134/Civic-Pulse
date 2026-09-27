@@ -134,7 +134,6 @@ class LLMTriage(TriageProvider):
                 priority=Priority(priority_val),
                 summary=summary_val,
                 confidence=confidence_val,
-                triaged_by="llm:groq",
             )
             return result
         except (ValueError, ValidationError) as e:

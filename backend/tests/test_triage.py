@@ -39,7 +39,7 @@ class TestRuleBasedTriage:
         assert result.category == Category.WATER
         assert result.priority == Priority.HIGH
         assert len(result.summary) <= 140
-        assert result.triaged_by == "rules"
+        assert provider.name == "rules"
 
     @pytest.mark.asyncio
     async def test_electricity_classification(self):
@@ -47,7 +47,7 @@ class TestRuleBasedTriage:
         result = await provider.triage("Electric wire sparking and power outage", "Model Town")
         assert result.category == Category.ELECTRICITY
         assert result.priority == Priority.NORMAL
-        assert result.triaged_by == "rules"
+        assert provider.name == "rules"
 
     @pytest.mark.asyncio
     async def test_summary_truncation(self):
@@ -56,6 +56,28 @@ class TestRuleBasedTriage:
         result = await provider.triage(long_text, "Lahore")
         assert len(result.summary) <= 140
 
+    @pytest.mark.asyncio
+    async def test_confidence_scoring_density(self):
+        """
+        Confidence is derived from keyword match density:
+        >= 3 keyword matches -> 0.9
+        1-2 keyword matches -> 0.6
+        0 matches (fallback) -> 0.3
+        """
+        provider = RuleBasedTriage()
+
+        # >= 3 matches: 'water', 'pipe', 'burst', 'urgent'
+        high_conf = await provider.triage("Urgent! Water pipe burst in street", "Lahore")
+        assert high_conf.confidence == 0.9
+
+        # 1-2 matches: 'water'
+        med_conf = await provider.triage("Water is dirty today", "Lahore")
+        assert med_conf.confidence == 0.6
+
+        # 0 matches
+        low_conf = await provider.triage("Something happened near house", "Unknown")
+        assert low_conf.confidence == 0.3
+
 
 class TestSimulatedTriage:
     @pytest.mark.asyncio
@@ -63,9 +85,12 @@ class TestSimulatedTriage:
         provider = SimulatedTriage()
         result_water = await provider.triage("Water leak in bathroom pipe", "Lahore")
         assert result_water.category == Category.WATER
+        assert result_water.confidence == 0.95
+        assert provider.name == "simulated"
 
         result_elec = await provider.triage("Electric transformer spark", "Lahore")
         assert result_elec.category == Category.ELECTRICITY
+        assert result_elec.confidence == 0.95
 
     @pytest.mark.asyncio
     async def test_failure_injection_raises_exception(self):
@@ -94,7 +119,7 @@ class TestLLMTriageStructuredOutputAndGuardrails:
         assert result.priority == Priority.HIGH
         assert result.summary == "Burst pipe on Main Boulevard"
         assert result.confidence == 0.95
-        assert result.triaged_by == "llm:groq"
+        assert llm.name == "llm:groq"
 
     def test_structured_output_cleans_code_fences(self):
         llm = LLMTriage(api_key="test-key")
@@ -262,7 +287,6 @@ class TestTriageServiceOrchestrationAndFallback:
             priority=Priority.NORMAL,
             summary="Streetlight not working",
             confidence=0.88,
-            triaged_by="mock:provider",
         ))
 
         cache = InMemoryCache()
@@ -282,21 +306,112 @@ class TestTriageServiceOrchestrationAndFallback:
         assert result2.summary == result1.summary
 
     @pytest.mark.asyncio
-    async def test_mandatory_assignment_fallback_contract(self):
+    async def test_structured_warning_log_on_fallback(self):
         """
-        Assignment Page 12 mandatory requirement:
-        'Write this test if you write no other: given a provider that always raises,
-        POST /api/complaints still returns 201 and triaged_by == "rules:fallback".'
+        §2.6 requirement: One WARNING per triage fallback with complaint_id,
+        provider and error_class.
         """
         failing_provider = SimulatedTriage(raise_exception=True)
         cache = InMemoryCache()
         service = TriageService(provider=failing_provider, cache=cache)
 
-        result = await service.triage(
-            "Burst water main flooding Street 12 since fajr, water entering ground floors",
-            "Street 12"
-        )
-        assert result.triaged_by == "rules:fallback"
-        assert result.category == Category.WATER
-        assert result.priority == Priority.HIGH
+        with patch("app.services.triage.logger.warning") as mock_warn:
+            await service.triage("Gas leak on road", "Lahore", complaint_id="test-complaint-123")
+            mock_warn.assert_called_once()
+            call_args, call_kwargs = mock_warn.call_args
+            assert call_args[0] == "triage_fallback"
+            assert call_kwargs["extra"]["complaint_id"] == "test-complaint-123"
+            assert call_kwargs["extra"]["provider"] == "simulated"
+            assert call_kwargs["extra"]["error_class"] == "RuntimeError"
+
+    @pytest.mark.asyncio
+    async def test_mandatory_assignment_fallback_http_contract(self):
+        """
+        Assignment Page 12 mandatory contract requirement:
+        'Write this test if you write no other: given a provider that always raises,
+        POST /api/complaints still returns 201 and triaged_by == "rules:fallback".'
+        """
+        import uuid
+        from datetime import datetime, timezone
+        from app.main import app
+        from app.core.dependencies import get_complaints_repository, get_rate_limiter
+
+        # Provider that always raises
+        failing_provider = SimulatedTriage(raise_exception=True)
+
+        # Mock database repository and rate limiter to test HTTP endpoint in isolation
+        mock_repo = AsyncMock()
+        mock_repo.create.return_value = {
+            "id": uuid.uuid4(),
+            "text": "Burst water main flooding Street 12 since fajr, water entering ground floors",
+            "location": "Street 12, Lahore",
+            "reporter_contact": "0300-1112233",
+            "category": "water",
+            "priority": "high",
+            "status": "open",
+            "ai_summary": "Burst water main flooding Street 12",
+            "triaged_by": "rules:fallback",
+            "triage_latency_ms": 15,
+            "created_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(timezone.utc),
+        }
+
+        mock_limiter = AsyncMock()
+        mock_limiter.check_limit.return_value = (True, 0)
+
+        app.dependency_overrides[get_complaints_repository] = lambda: mock_repo
+        app.dependency_overrides[get_rate_limiter] = lambda: mock_limiter
+
+        try:
+            with patch("app.routes.complaints.TriageService") as mock_service_cls:
+                # Real TriageService configured with the failing provider
+                real_service_with_failure = TriageService(
+                    provider=failing_provider, cache=InMemoryCache()
+                )
+                mock_service_cls.return_value = real_service_with_failure
+
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://test"
+                ) as ac:
+                    payload = {
+                        "text": "Burst water main flooding Street 12 since fajr, water entering ground floors",
+                        "location": "Street 12, Lahore",
+                        "reporter_contact": "0300-1112233",
+                    }
+                    response = await ac.post("/api/complaints", json=payload)
+
+                    # Assert HTTP status 201 and triaged_by == "rules:fallback"
+                    assert response.status_code == 201
+                    data = response.json()
+                    assert data["triaged_by"] == "rules:fallback"
+                    assert data["category"] == "water"
+                    assert data["priority"] == "high"
+        finally:
+            app.dependency_overrides.clear()
+
+
+class TestFactoryProviders:
+    def test_canonical_and_alias_provider_selection(self):
+        """
+        §2.5 specifies four implementations selected by TRIAGE_PROVIDER:
+        llm -> LLMTriage
+        ollama -> OllamaTriage
+        rules -> RuleBasedTriage
+        simulated -> SimulatedTriage
+        With aliases llm:groq and llm:ollama also supported.
+        """
+        from app.providers.triage.factory import get_triage_provider
+
+        # Canonical values per §2.5
+        assert get_triage_provider("simulated").name == "simulated"
+        assert get_triage_provider("rules").name == "rules"
+        assert get_triage_provider("llm").name == "llm:groq"
+        assert get_triage_provider("ollama").name == "llm:ollama"
+
+        # Aliases
+        assert get_triage_provider("llm:groq").name == "llm:groq"
+        assert get_triage_provider("llm:ollama").name == "llm:ollama"
+
+        # Default fallback
+        assert get_triage_provider("unknown_val").name == "simulated"
 

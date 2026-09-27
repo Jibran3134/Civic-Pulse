@@ -84,6 +84,5 @@ Respond with JSON only:
                 priority=Priority(pri_val),
                 summary=summary_val,
                 confidence=confidence_val,
-                triaged_by="llm:ollama",
             )
 

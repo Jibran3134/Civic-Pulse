@@ -8,7 +8,7 @@ from app.core.config import get_settings
 from app.core.dependencies import get_cache_provider
 from app.core.logging import get_logger
 from app.providers.cache import CacheProvider
-from app.providers.triage.base import TriageProvider, TriageResult
+from app.providers.triage.base import TriageOutcome, TriageProvider, TriageResult
 from app.providers.triage.factory import get_triage_provider
 
 logger = get_logger(__name__)
@@ -82,7 +82,8 @@ class TriageService:
 
     async def triage(
         self, text: str, location: str, complaint_id: str | None = None
-    ) -> TriageResult:
+    ) -> TriageOutcome:
+        # Timer starts before cache lookup (measures full triage pipeline latency)
         start_time = time.perf_counter()
         cache = self._get_cache()
         content_hash = self._content_hash(text, location)
@@ -96,8 +97,14 @@ class TriageService:
 
         if hit and cached_data:
             latency_ms = int((time.perf_counter() - start_time) * 1000)
-            result = TriageResult(**cached_data)
-            result.triage_latency_ms = latency_ms
+            outcome = TriageOutcome(
+                category=cached_data["category"],
+                priority=cached_data["priority"],
+                summary=cached_data["summary"],
+                confidence=cached_data["confidence"],
+                triaged_by=cached_data.get("triaged_by", "cache"),
+                triage_latency_ms=latency_ms,
+            )
 
             # Increment cache hit stats
             try:
@@ -106,17 +113,17 @@ class TriageService:
             except Exception:
                 pass
 
-            outcome = {
-                "provider": result.triaged_by,
+            recorded_outcome = {
+                "provider": outcome.triaged_by,
                 "latency_ms": latency_ms,
                 "fallback": False,
                 "cache_hit": True,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
-            await self._record_outcome(outcome)
+            await self._record_outcome(recorded_outcome)
 
             logger.info("Triage content-hash cache hit", extra={"hash": content_hash, "latency_ms": latency_ms})
-            return result
+            return outcome
 
         # Record total queries counter
         try:
@@ -124,22 +131,19 @@ class TriageService:
         except Exception:
             pass
 
-        # 2. Cache miss -> Invoke designated TriageProvider
+        # 2. Cache miss -> Invoke active TriageProvider
         provider = self._get_provider()
         is_fallback = False
         try:
             result = await provider.triage(text, location)
-            latency_ms = int((time.perf_counter() - start_time) * 1000)
-            result.triage_latency_ms = latency_ms
-            if not result.triaged_by:
-                result.triaged_by = provider.name
+            triaged_by = provider.name
         except Exception as e:
-            # 3. Fallback to RuleBasedTriage (§2.5 item 4 & Rubric F)
-            # Requirement: One WARNING per triage fallback with complaint id, provider, error class
+            # 3. Fallback directly to RuleBasedTriage (§2.5 item 4 & Rubric F)
+            # Structured JSON warning with complaint_id, provider, error_class (§2.6)
             is_fallback = True
             error_class = e.__class__.__name__
             logger.warning(
-                f"Triage provider '{provider.name}' failed with {error_class}: {e}. Falling back to RuleBasedTriage.",
+                "triage_fallback",
                 extra={
                     "complaint_id": str(complaint_id) if complaint_id else "pre-persist",
                     "provider": provider.name,
@@ -149,36 +153,51 @@ class TriageService:
 
             fallback_provider = get_triage_provider("rules")
             result = await fallback_provider.triage(text, location)
-            latency_ms = int((time.perf_counter() - start_time) * 1000)
-            result.triage_latency_ms = latency_ms
-            result.triaged_by = "rules:fallback"
+            triaged_by = "rules:fallback"
+
+        latency_ms = int((time.perf_counter() - start_time) * 1000)
+        outcome = TriageOutcome(
+            category=result.category,
+            priority=result.priority,
+            summary=result.summary,
+            confidence=result.confidence,
+            triaged_by=triaged_by,
+            triage_latency_ms=latency_ms,
+        )
 
         # 4. Cache valid triage result with 24-hour TTL (86400s)
         try:
-            await cache.set(cache_key, result.model_dump(), ttl=86400)
+            cache_payload = {
+                "category": result.category.value,
+                "priority": result.priority.value,
+                "summary": result.summary,
+                "confidence": result.confidence,
+                "triaged_by": triaged_by,
+            }
+            await cache.set(cache_key, cache_payload, ttl=86400)
         except Exception as e:
             logger.warning(f"Failed to cache triage result in Redis: {e}")
 
         # 5. Record outcome to recent outcomes list
-        outcome = {
-            "provider": result.triaged_by,
+        recorded_outcome = {
+            "provider": triaged_by,
             "latency_ms": latency_ms,
             "fallback": is_fallback,
             "cache_hit": False,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
-        await self._record_outcome(outcome)
+        await self._record_outcome(recorded_outcome)
 
         logger.info(
             "Triage completed",
             extra={
-                "provider": result.triaged_by,
-                "category": result.category.value,
-                "priority": result.priority.value,
-                "latency_ms": result.triage_latency_ms,
+                "provider": triaged_by,
+                "category": outcome.category.value,
+                "priority": outcome.priority.value,
+                "latency_ms": outcome.triage_latency_ms,
                 "fallback": is_fallback,
             },
         )
 
-        return result
+        return outcome
 

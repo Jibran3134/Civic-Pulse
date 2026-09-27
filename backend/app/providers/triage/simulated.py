@@ -66,6 +66,5 @@ class SimulatedTriage(TriageProvider):
             priority=priority,
             summary=summary,
             confidence=self.fixed_confidence,
-            triaged_by="simulated",
         )
 
