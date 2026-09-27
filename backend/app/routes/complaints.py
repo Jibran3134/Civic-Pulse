@@ -1,6 +1,7 @@
 import uuid
 from datetime import datetime
 from typing import Any
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from pydantic import BaseModel, Field, field_validator
@@ -10,6 +11,7 @@ from app.core.logging import get_logger
 from app.providers.cache import CacheProvider, RateLimiterProvider
 from app.providers.triage.base import Category, Priority
 from app.repositories.complaints import ComplaintsRepository
+from app.services.statistics import STATS_CACHE_KEY
 from app.services.status_machine import Status, allowed_transitions, is_valid_transition
 from app.services.triage import TriageService
 
@@ -20,7 +22,7 @@ router = APIRouter()
 # Shared by the writer and the reader of the stats cache. Both sides must
 # agree on this string: the cache is only invalidated correctly if the key
 # written in stats.py is the key deleted here.
-STATS_CACHE_KEY = "stats:aggregates"
+# Imported from app.services.statistics: one definition, two readers.
 
 
 class ComplaintCreate(BaseModel):
@@ -155,10 +157,18 @@ async def create_complaint(
             headers={"Retry-After": str(retry_after)},
         )
 
+    # Mint the id here rather than letting the column default generate it.
+    # Triage runs before the INSERT, so a server-generated id would not exist at
+    # the moment a provider fails and the fallback WARNING is emitted -- and that
+    # log would carry "pre-persist" instead of the complaint it belongs to.
+    complaint_id = str(uuid4())
     triage_service = TriageService()
-    triage_result = await triage_service.triage(complaint.text, complaint.location)
+    triage_result = await triage_service.triage(
+        complaint.text, complaint.location, complaint_id=complaint_id
+    )
 
     created = await repo.create(
+        complaint_id=complaint_id,
         text=complaint.text,
         location=complaint.location,
         reporter_contact=complaint.reporter_contact,
