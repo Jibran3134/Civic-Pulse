@@ -107,6 +107,14 @@ temp/
 *.tmp
 *.temp
 
+# Local reference assignment documents
+*.pdf
+*.docx
+scratch/
+*.tsbuildinfo
+openapi.json
+
+
 # Backup files
 *.bak
 *.backup

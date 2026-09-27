@@ -14,10 +14,13 @@ router = APIRouter()
 async def get_providers(
     provider: TriageProvider = Depends(get_triage_provider_dep),
 ):
-    TriageService()
-    # Get the last 20 outcomes from the cache or in-memory
-    # For now, return the active provider
+    triage_service = TriageService(provider=provider)
+    recent_outcomes = await triage_service.get_recent_outcomes(limit=20)
+    cache_stats = await triage_service.get_cache_stats()
+
     return {
         "active_provider": provider.name,
-        "recent_outcomes": [],  # TODO: implement recent outcomes tracking
+        "recent_outcomes": recent_outcomes,
+        "cache_stats": cache_stats,
     }
+
