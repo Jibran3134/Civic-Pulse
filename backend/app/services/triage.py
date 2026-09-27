@@ -186,7 +186,7 @@ class TriageService:
                 "confidence": result.confidence,
                 "triaged_by": triaged_by,
             }
-            await cache.set(cache_key, cache_payload, ttl=86400)
+            await cache.set(cache_key, cache_payload, ttl=settings.triage_cache_ttl_hours * 3600)
         except Exception as e:
             logger.warning(f"Failed to cache triage result in Redis: {e}")
 

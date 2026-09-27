@@ -65,3 +65,39 @@ The active provider is chosen at runtime by the `TRIAGE_PROVIDER` environment va
 ### Negative / Trade-offs
 * Requires maintaining four separate provider implementations.
 * Keyword fallback provides coarser summaries than LLMs, though priority and category classification remain reliable.
+
+---
+
+## 5. Update — 2026-09-27: Centralised Provider Configuration (feat/ollama-retry)
+
+**Author**: Alishba
+
+Prior to this update, `OllamaTriage` hard-coded its base URL, model name and
+timeout, while `LLMTriage` read some values from environment variables
+directly and others from `Settings`.  This caused the two providers to drift:
+`OllamaTriage` had no retry logic at all, and its timeout was always 10 s
+regardless of any `.env` override.
+
+### Change
+
+All six provider-level tunables have been moved into `Settings`
+(`backend/app/core/config.py`) and are read by both providers via
+`get_settings()`:
+
+| Setting field            | Env var                  | Default              |
+|--------------------------|--------------------------|----------------------|
+| `ollama_base_url`        | `OLLAMA_BASE_URL`        | `http://localhost:11434` |
+| `ollama_model`           | `OLLAMA_MODEL`           | `llama3.2:1b`        |
+| `triage_timeout`         | `TRIAGE_TIMEOUT`         | `10.0` (max 10 s)    |
+| `triage_max_retries`     | `TRIAGE_MAX_RETRIES`     | `1`                  |
+| `triage_retry_base_delay`| `TRIAGE_RETRY_BASE_DELAY`| `0.5`                |
+| `triage_cache_ttl_hours` | `TRIAGE_CACHE_TTL_HOURS` | `24`                 |
+
+`triage_timeout` carries a Pydantic `le=10.0` constraint; `triage_max_retries`
+carries `ge=0`.  Neither provider can now exceed the spec cap or be configured
+with a negative retry count — validation is enforced at start-up, not
+discovered at the first live call.
+
+`OllamaTriage` was also given the same jittered retry logic as `LLMTriage`
+(retry on timeout, 429, 5 xx; never on another 4 xx; never on a parse
+validation error).
