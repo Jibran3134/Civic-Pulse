@@ -8,13 +8,8 @@ services:
       POSTGRES_DB: civicpulse
     volumes:
       - pgdata:/var/lib/postgresql/data
-    ports:
-      - target: 5432
-        published: 5432
-        protocol: tcp
     networks:
       - internal
-      - edge
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s
@@ -152,6 +147,7 @@ services:
       - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/civicpulse
       - REDIS_URL=redis://redis:6379/0
       - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - GROQ_MODEL=${GROQ_MODEL:-openai/gpt-oss-20b}
       - TRIAGE_PROVIDER=${TRIAGE_PROVIDER:-simulated}
       - OLLAMA_BASE_URL=http://ollama:11434
       - OLLAMA_MODEL=llama3.2:1b

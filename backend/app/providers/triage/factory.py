@@ -12,7 +12,7 @@ def get_triage_provider(provider_name: str | None = None) -> TriageProvider:
         return SimulatedTriage()
     if name == "rules":
         return RuleBasedTriage()
-    if name in ("llm", "llm:groq"):
+    if name in ("llm", "llm:groq", "groq"):
         from app.providers.triage.llm_groq import LLMTriage
 
         return LLMTriage()

@@ -178,7 +178,11 @@ jobs:
       # never programmed and the smoke test below can never pass.
       - name: Install ingress-nginx controller
         run: |
-          kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.11.2/deploy/static/provider/kubeadm/deploy.yaml
+          # Upstream deleted `deploy/static/provider/kubeadm/` and folded the same
+          # generic manifest into `provider/cloud/`, so the old kubeadm URL is a
+          # 404. The cloud variant is byte-for-byte the controller we want here:
+          # LoadBalancer Service on 80/443, no cloud-specific wiring.
+          kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.11.2/deploy/static/provider/cloud/deploy.yaml
           kubectl rollout status deployment/ingress-nginx-controller -n ingress-nginx --timeout=300s
 
       # `kubectl get hpa` prints <unknown> for CURRENT/METRICS without a metrics
@@ -197,7 +201,11 @@ jobs:
       - name: Install VPA CRDs
         continue-on-error: true
         run: |
-          kubectl apply -f https://github.com/kubernetes/autoscaler/releases/latest/download/vpa-crds.yaml
+          # autoscaler's latest release is now a chart-only .tgz and no longer
+          # ships the vpa-crds.yaml asset, so that URL 404s too. The generated
+          # CRD still lives in-repo. Still `continue-on-error`: the apply step
+          # below degrades gracefully if the CRD is missing.
+          kubectl apply -f https://raw.githubusercontent.com/kubernetes/autoscaler/master/vertical-pod-autoscaler/deploy/vpa-v1-crd-gen.yaml
 
       # BONUS: deploy by immutable image digest rather than by mutable tag.
       # `kustomize edit set image` APPENDS, so the new ref must be keyed on the
