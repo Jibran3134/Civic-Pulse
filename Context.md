@@ -456,6 +456,18 @@ sudo mv kustomize /usr/local/bin/
 Applies to `ci.yml` (`manifests` job) and `cd.yml` (`deploy-k8s` job) — one fix, because CD reuses CI via `uses: ./.github/workflows/ci.yml`. Matches the existing kubeconform step's style. Pinning also stops the manifests being validated/substituted by a kustomize version that changes under us.
 **Verified:** full `manifests` job replica in a clean container → kustomize v5.4.3, kubeconform v0.6.7, `16 resources, Valid: 15, Invalid: 0, Errors: 0, Skipped: 1` (skip = VPA CRD schema, expected under `-ignore-missing-schemas`); `actionlint` clean on both workflows.
 **Note:** `k3d`'s `install.sh` (cd.yml) was checked and is safe — it uses `releases/latest` on `github.com` plus a direct asset download, no `api.github.com` call.
+### 27. ingress-nginx `provider/kubeadm` Manifest 404
+**Error:** `error: unable to read URL ".../controller-v1.11.2/deploy/static/provider/kubeadm/deploy.yaml", server reported 404 Not Found`
+**Root Cause:** Upstream deleted `deploy/static/provider/kubeadm/` and folded the identical generic manifest into `deploy/static/provider/cloud/`. The tag `controller-v1.11.2` is fine; only the path moved.
+**Fix:** `cd.yml` now applies `deploy/static/provider/cloud/deploy.yaml`. Same LoadBalancer Service on 80/443, no cloud-specific wiring.
+**Lesson:** Remote `kubectl apply -f <raw-url>` targets are an unpinned external dependency — paths get renamed under you. Verify the URL returns 200 before trusting a step that only runs in CI.
+
+### 28. VPA CRD Asset Removed from autoscaler Releases
+**Error:** Silent — masked by `continue-on-error: true`, so the apply step kept hitting the "VPA CRD unavailable" branch and never created the VerticalPodAutoscaler.
+**Root Cause:** `kubernetes/autoscaler` latest release is now `vertical-pod-autoscaler-chart-0.13.0`, a chart-only `.tgz` with no `vpa-crds.yaml` asset.
+**Fix:** Apply the in-repo generated CRD instead:
+`https://raw.githubusercontent.com/kubernetes/autoscaler/master/vertical-pod-autoscaler/deploy/vpa-v1-crd-gen.yaml`
+**Lesson:** `continue-on-error` on an install step hides real breakage. If the step's whole purpose is to make a later step work, verify the object exists afterwards (`kubectl get crd ...`) instead of letting the failure pass silently.
 
 ---
 
@@ -486,6 +498,8 @@ Applies to `ci.yml` (`manifests` job) and `cd.yml` (`deploy-k8s` job) — one fi
 | `psycopg-pool>=3.3.6` | Use `psycopg-pool>=3.3.3` |
 | Line length > 100 | Set `line-length = 120` |
 | MyPy strict mode | Disable strict, add permissive flags |
+| `kubectl apply -f <raw-github-url>` assumed stable | Verify the path exists at the pinned tag; upstream renames/removes manifest directories |
+| `continue-on-error` on a CRD install | Keep the tolerance, but assert the CRD exists in the next step instead of relying on it |
 
 ---
 
