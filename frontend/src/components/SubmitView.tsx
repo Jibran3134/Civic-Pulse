@@ -394,9 +394,9 @@ export const SubmitView: React.FC = () => {
             <div className="modal-body">
               <div className="source-info-box">
                 <div className="source-provider-row">
-                  <span className="source-label">Active Provider:</span>
+                  <span className="source-label">Active Engine:</span>
                   <span className="badge badge-provider">
-                    {triageResult.triaged_by}
+                    {`Engine: ${triageResult.triaged_by}`}
                   </span>
                 </div>
                 <h4 className="source-heading">{getSourceDetails(triageResult.triaged_by).title}</h4>
@@ -406,11 +406,11 @@ export const SubmitView: React.FC = () => {
               <div className="source-metrics-grid">
                 <div className="metric-box">
                   <span className="metric-label">Category</span>
-                  <span className="metric-value">{triageResult.category.toUpperCase()}</span>
+                  <span className="metric-value">{`#${triageResult.category.toUpperCase()}`}</span>
                 </div>
                 <div className="metric-box">
                   <span className="metric-label">Priority</span>
-                  <span className="metric-value">{triageResult.priority.toUpperCase()}</span>
+                  <span className="metric-value">{`Level: ${triageResult.priority.toUpperCase()}`}</span>
                 </div>
                 <div className="metric-box">
                   <span className="metric-label">Latency</span>
