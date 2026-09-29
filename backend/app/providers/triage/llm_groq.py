@@ -44,7 +44,7 @@ class LLMTriage(TriageProvider):
     ):
         settings = get_settings()
         self.api_key = api_key or settings.groq_api_key or os.getenv("GROQ_API_KEY", "")
-        self.model = model
+        self.model = os.getenv("GROQ_MODEL") or model
         self.base_url = base_url.rstrip("/")
         # Hard cap: 10 s timeout on every call (§2.5 item 2); read from settings
         # so the value is testable and consistent with OllamaTriage.
