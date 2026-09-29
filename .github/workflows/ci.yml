@@ -376,8 +376,12 @@ jobs:
       - name: Install kustomize
         if: ${{ steps.check.outputs.exists == 'true' }}
         run: |
-          curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+          KUSTOMIZE_VERSION=5.4.3
+          curl -sSL -o kustomize.tar.gz \
+            "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
+          tar -xzf kustomize.tar.gz kustomize
           sudo mv kustomize /usr/local/bin/
+          kustomize version
 
       # kubeconform was never installed, so the validate step could only ever fail
       # with "kubeconform: command not found" if it had actually been reached.

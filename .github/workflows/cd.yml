@@ -152,8 +152,12 @@ jobs:
 
       - name: Install kustomize
         run: |
-          curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+          KUSTOMIZE_VERSION=5.4.3
+          curl -sSL -o kustomize.tar.gz \
+            "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
+          tar -xzf kustomize.tar.gz kustomize
           sudo mv kustomize /usr/local/bin/
+          kustomize version
 
       # k3d ships Traefik, but k8s/base/ingress.yaml asks for ingressClassName
       # `nginx`. Without a controller that class matches nothing, the Ingress is
@@ -206,6 +210,30 @@ jobs:
           #  2. A surviving `ghcr.io/CHANGE_ME/...` is not a valid image reference,
           #     so the API server would reject the object at apply time.
           sed -i '/^    newTag: .*$/d' kustomization.yaml
+
+          # Substitute secret placeholders with real values from GitHub Secrets.
+          # secret.yaml ships with literal "CHANGE_ME" so it can be stored in git;
+          # here we write a strategic-merge patch that overrides those keys with
+          # the real values before kustomize renders the final manifests.
+          POSTGRES_PWD="${{ secrets.POSTGRES_PASSWORD }}"
+          GROQ_KEY="${{ secrets.GROQ_API_KEY }}"
+          if [ -z "$POSTGRES_PWD" ] || [ -z "$GROQ_KEY" ]; then
+            echo "::error::POSTGRES_PASSWORD and/or GROQ_API_KEY secrets are not set on this repository."
+            echo "Go to Settings → Secrets and variables → Actions and add them."
+            exit 1
+          fi
+          cat > secret-patch.yaml << PATCH_EOF
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: civicpulse-secrets
+            namespace: civicpulse
+          stringData:
+            POSTGRES_PASSWORD: "${POSTGRES_PWD}"
+            GROQ_API_KEY: "${GROQ_KEY}"
+            DATABASE_URL: "postgresql://postgres:${POSTGRES_PWD}@postgres:5432/civicpulse"
+          PATCH_EOF
+          kustomize edit add patch --path secret-patch.yaml --kind Secret --name civicpulse-secrets
 
           kustomize edit set image \
             "ghcr.io/CHANGE_ME/civicpulse-backend=${BACKEND_REPO}@${BACKEND_DIGEST}"
