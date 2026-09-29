@@ -68,6 +68,9 @@ appendonly.aof
 kubeconfig
 *.kubeconfig
 
+# Local CI tool binaries (Windows executables — too large for GitHub, download on demand)
+.ci-tools/*.exe
+
 # Local cluster
 .k3d/
 .kind/
