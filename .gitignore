@@ -72,6 +72,11 @@ kubeconfig
 .k3d/
 .kind/
 
+# Locally downloaded CI tools (kustomize/kubeconform/trivy) that
+# scripts/ci-local.ps1 falls back to when they are not on PATH. Binaries,
+# never source.
+.ci-tools/
+
 # Coverage reports
 coverage/
 .nyc_output/
