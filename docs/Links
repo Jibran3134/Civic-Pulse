@@ -1,0 +1,2 @@
+image: ghcr.io/Jibran3134/Civic-Pulse-backend@sha256:3e434162144afcf6b23cbbbe299d1e69921ab1bd409566d3022eeed1325b0e3a
+image: ghcr.io/Jibran3134/Civic-Pulse-frontend@sha256:cdab0dd38aa835b908d1548ea45e43361d2f072c0cf61f02f601b84b927bd30b
