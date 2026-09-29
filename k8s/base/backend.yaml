@@ -142,6 +142,16 @@ spec:
               exec:
                 command: ["/bin/sh", "-c", "sleep 10"]
       initContainers:
+        - name: wait-for-postgres
+          image: postgres:16-alpine
+          command: ["sh", "-c", "until pg_isready -h postgres -U postgres; do echo waiting for database; sleep 2; done;"]
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "32Mi"
+            limits:
+              cpu: "100m"
+              memory: "64Mi"
         # Nothing else in the cluster applies migrations, so without this the
         # backend starts against an empty schema and every request fails with
         # `relation "complaints" does not exist`. `alembic upgrade head` is
