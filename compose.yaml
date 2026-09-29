@@ -8,8 +8,13 @@ services:
       POSTGRES_DB: civicpulse
     volumes:
       - pgdata:/var/lib/postgresql/data
+    ports:
+      - target: 5432
+        published: 5432
+        protocol: tcp
     networks:
       - internal
+      - edge
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s
