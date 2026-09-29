@@ -24,3 +24,35 @@ We need an immutable deployment mechanism that guarantees byte-for-byte reproduc
 2. **Reproducible Rollbacks**: Rolling back a deployment must restore the exact previous binary without re-building or risking tag mutations.
 3. **Traceability**: Given a running pod in Kubernetes, an engineer or auditor must be able to trace it directly back to the exact Git commit SHA that built it.
 4. **Supply Chain Security**: Enable static vulnerability scanners (Trivy) to pin scan results to cryptographic content addresses.
+
+---
+
+## 3. Decision Outcome
+
+We enforce **Deploy-by-Digest (SHA-256)** across all CI/CD pipelines, Kustomize manifests, and Kubernetes deployments.
+
+### Implementation Details:
+
+1. **Build & Tag by Git SHA in CI (`.github/workflows/ci.yml`)**:
+   During image compilation, images are tagged with both the git commit SHA (`${{ github.sha }}`) and their immutable content digest:
+   ```yaml
+   tags: |
+     ghcr.io/${{ github.repository }}/backend:${{ github.sha }}
+   ```
+
+2. **Kustomize Set Image (`.github/workflows/cd.yml`)**:
+   During CD deployment, `kustomize edit set image` updates the Kubernetes manifest with the specific immutable image SHA rather than a floating tag:
+   ```bash
+   cd k8s/overlays/prod
+   kustomize edit set image backend=ghcr.io/${{ github.repository }}/backend@${DIGEST}
+   ```
+
+3. **Base Image Freezing in Dockerfiles**:
+   The Dockerfiles themselves adhere to this decision by pinning official base images by their cryptographic SHA-256 digest:
+   ```dockerfile
+   FROM python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f AS builder
+   ```
+
+4. **Production Compose Manifest (`compose.prod.yaml`)**:
+   In production Compose topologies, container images pin explicit versioned and digested references instead of relying on local image rebuilds.
+
