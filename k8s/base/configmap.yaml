@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: civicpulse-config
+  namespace: civicpulse
+data:
+  ENVIRONMENT: "production"
+  LOG_LEVEL: "INFO"
+  TRIAGE_PROVIDER: "llm:groq"
+  # No OLLAMA_BASE_URL / OLLAMA_MODEL here, deliberately.
+  #
+  # There is no Ollama workload in this cluster: no Deployment, no Service, no
+  # PVC. The value that used to sit here was http://ollama:11434, copied from
+  # compose.yaml, where `ollama` is a real service name on the compose network.
+  # In Kubernetes that name resolves to nothing.
+  #
+  # It was harmless only by accident. TRIAGE_PROVIDER is llm:groq in base and
+  # prod and simulated in dev, so factory.py never constructs OllamaTriage and
+  # the URL was never dereferenced. The failure mode is the problem: if anyone
+  # set TRIAGE_PROVIDER=llm:ollama on the cluster, every call would fail DNS
+  # resolution and silently degrade to rules:fallback -- an AI outage that
+  # looks like a healthy pipeline.
+  #
+  # If Ollama is ever added to the cluster, add the workload and the Service
+  # first, then restore these keys here and in backend.yaml together.
+  STATS_CACHE_TTL: "30"
+  RATE_LIMIT_REQUESTS: "10"
+  RATE_LIMIT_WINDOW: "60"
+  RATE_LIMIT_BURST: "5"

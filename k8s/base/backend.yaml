@@ -1,0 +1,170 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: civicpulse
+  labels:
+    app: backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: backend
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: backend
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: backend
+          image: ghcr.io/CHANGE_ME/civicpulse-backend:CHANGE_ME
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+              name: http
+          env:
+            - name: ENVIRONMENT
+              valueFrom:
+                configMapKeyRef:
+                  name: civicpulse-config
+                  key: ENVIRONMENT
+            - name: LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: civicpulse-config
+                  key: LOG_LEVEL
+            - name: TRIAGE_PROVIDER
+              valueFrom:
+                configMapKeyRef:
+                  name: civicpulse-config
+                  key: TRIAGE_PROVIDER
+            # OLLAMA_BASE_URL / OLLAMA_MODEL are intentionally not injected.
+            # No Ollama workload exists in this cluster, so those keys pointed at
+            # a DNS name that resolves to nothing. Settings has defaults for
+            # both, so the pod starts cleanly. See k8s/base/configmap.yaml.
+            - name: STATS_CACHE_TTL
+              valueFrom:
+                configMapKeyRef:
+                  name: civicpulse-config
+                  key: STATS_CACHE_TTL
+            - name: RATE_LIMIT_REQUESTS
+              valueFrom:
+                configMapKeyRef:
+                  name: civicpulse-config
+                  key: RATE_LIMIT_REQUESTS
+            - name: RATE_LIMIT_WINDOW
+              valueFrom:
+                configMapKeyRef:
+                  name: civicpulse-config
+                  key: RATE_LIMIT_WINDOW
+            - name: RATE_LIMIT_BURST
+              valueFrom:
+                configMapKeyRef:
+                  name: civicpulse-config
+                  key: RATE_LIMIT_BURST
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: civicpulse-secrets
+                  key: DATABASE_URL
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: civicpulse-secrets
+                  key: REDIS_URL
+            - name: GROQ_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: civicpulse-secrets
+                  key: GROQ_API_KEY
+          resources:
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8000
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # Slow start is not failure. Until the startupProbe succeeds the
+          # kubelet runs neither the liveness nor the readiness probe, so a
+          # backend that needs 40s to open its connection pool is not killed
+          # for being slow -- it is simply not given traffic yet.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            periodSeconds: 2
+            timeoutSeconds: 3
+            failureThreshold: 30
+          # preStop sleeps BEFORE the container receives SIGTERM. Endpoint
+          # removal and SIGTERM are both asynchronous, so without this the pod
+          # can begin closing while kube-proxy/ingress-nginx still has its
+          # address in the endpoint list and is still routing new requests
+          # into it. The sleep gives the control plane time to propagate the
+          # removal everywhere first, which is what makes maxUnavailable: 0 a
+          # real zero-downtime rollout rather than a hopeful one. Must be
+          # shorter than terminationGracePeriodSeconds (30) to leave room for
+          # the drain itself.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 10"]
+      initContainers:
+        # Nothing else in the cluster applies migrations, so without this the
+        # backend starts against an empty schema and every request fails with
+        # `relation "complaints" does not exist`. `alembic upgrade head` is
+        # idempotent -- it is a no-op when already at head -- so running it on
+        # every pod start and on every scale-out is safe, and with two backend
+        # replicas starting together the advisory lock Alembic takes serialises
+        # them. An initContainer rather than a Job because a Job would need
+        # re-deletion to re-run after a schema change, and this way a new image
+        # carrying a new migration applies it on the next rollout.
+        - name: migrate
+          image: ghcr.io/CHANGE_ME/civicpulse-backend:CHANGE_ME
+          imagePullPolicy: Always
+          command: ["alembic", "upgrade", "head"]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: civicpulse-secrets
+                  key: DATABASE_URL
+            - name: ENVIRONMENT
+              valueFrom:
+                configMapKeyRef:
+                  name: civicpulse-config
+                  key: ENVIRONMENT
+          resources:
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+            requests:
+              cpu: "100m"
+              memory: "128Mi"

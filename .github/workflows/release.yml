@@ -1,0 +1,170 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Two releases racing on the same :latest tag would interleave their pushes.
+# Serialise per tag rather than cancelling: an in-flight publish that gets
+# killed half way leaves a tag pointing at an image that was never completed.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+# Least privilege default; the job that creates the release widens it explicitly.
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # A tag is not a test result. Without this job the publishing step below had
+  # no `needs:` at all, so a `v*` tag pushed at a red main would push images to
+  # GHCR with no lint, no tests, no Trivy and no kubeconform. This reuses ci.yml
+  # verbatim, which is the point: the checks that gate a PR are the checks that
+  # gate a publish.
+  test:
+    name: Full Test Suite
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+    secrets: inherit
+
+  build-push-release:
+    name: Build & Push Release Images
+    runs-on: ubuntu-latest
+    needs: test
+    permissions:
+      packages: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      # frontend/ is present in the tree. This guard is kept because a release
+      # must not half-publish if the frontend is ever genuinely absent, but the
+      # comment above it used to assert the directory was missing, which has
+      # been false since the frontend landed.
+      - name: Check frontend exists
+        id: check-frontend
+        run: |
+          if [ -f frontend/package.json ]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_TOKEN }}
+
+      # The commit SHA is pushed alongside the semver tag. Without it `v1.2.3`
+      # is a floating label with no recorded link to a commit, and the :latest
+      # tag it also moves is overwritten by the next cd.yml run, so nothing
+      # downstream can say which build a given release was.
+      - name: Build & push backend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-backend:${{ steps.version.outputs.version }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-backend:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-backend:latest
+
+      - name: Build & push frontend
+        if: ${{ steps.check-frontend.outputs.exists == 'true' }}
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-frontend:${{ steps.version.outputs.version }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-frontend:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-frontend:latest
+
+      - name: Report skipped frontend image
+        if: ${{ steps.check-frontend.outputs.exists != 'true' }}
+        run: |
+          echo "::notice title=Frontend image SKIPPED::frontend/ is not in the tree, so no frontend image was published for ${{ steps.version.outputs.version }}."
+
+  generate-release-notes:
+    name: Generate Release Notes
+    runs-on: ubuntu-latest
+    needs: build-push-release
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate release notes
+        id: notes
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // listReleases() rejects with 404 (not an empty array) when the repo
+            // has never published a release, so the very first `v*` tag used to
+            // fail here. Treat "no previous release" as "start from the beginning".
+            let since = '2024-01-01T00:00:00Z';
+            try {
+              const { data: releases } = await github.rest.repos.listReleases({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                per_page: 1,
+              });
+              if (releases && releases.length > 0 && releases[0].published_at) {
+                since = releases[0].published_at;
+                console.log(`Previous release: ${releases[0].tag_name} @ ${since}`);
+              } else {
+                console.log('No previous release found - listing all commits.');
+              }
+            } catch (error) {
+              if (error.status === 404) {
+                console.log('No releases yet (404) - listing all commits.');
+              } else {
+                throw error;
+              }
+            }
+
+            const { data: commits } = await github.rest.repos.listCommits({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              since,
+              per_page: 100,
+            });
+
+            if (commits.length === 0) {
+              return `Release ${context.ref.replace('refs/tags/', '')}: no new commits since the previous release.`;
+            }
+            return commits.map(c => `- ${c.commit.message.split('\n')[0]}`).join('\n');
+
+      # softprops/action-gh-release requires a GITHUB_TOKEN regardless of whether
+      # the action is pinned; the pinning to a version (rather than @v1) only
+      # narrows it to a minor line. It is a mutable git tag, not a commit SHA,
+      # so it is not the immutability guarantee and is not presented as one.
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2.2.2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          body: ${{ steps.notes.outputs.result }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

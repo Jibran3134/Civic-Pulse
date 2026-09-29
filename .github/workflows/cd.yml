@@ -1,0 +1,316 @@
+name: CD
+
+on:
+  push:
+    branches: [main]
+
+# Do NOT cancel in progress. cd.yml creates a k3d cluster with a fixed name
+# and deletes it under `if: always()`. Cancelling a run mid-deploy would kill
+# the runner before that cleanup executes, and two overlapping runs would
+# otherwise fight over the same cluster name -- whichever reached the teardown
+# first would delete the cluster the other was still deploying into and smoke
+# testing. Serialising instead means the older run finishes and cleans up
+# before the newer one starts.
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: false
+
+# Least privilege default. Jobs that push images or the release widen this
+# explicitly via their own `permissions:` block.
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  CLUSTER_NAME: civicpulse-ci
+
+jobs:
+  # Reusable-workflow call: requires ci.yml to declare `on: workflow_call`.
+  # A job that `uses:` another workflow may not define runs-on/steps, and it is
+  # an ordinary node in the DAG, so `needs:` on build-push below is valid.
+  test:
+    name: Full Test Suite
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+    secrets: inherit
+
+  build-push:
+    name: Build & Push Images
+    runs-on: ubuntu-latest
+    needs: test
+    permissions:
+      packages: write
+      contents: read
+    outputs:
+      backend-digest: ${{ steps.push-backend.outputs.digest }}
+      frontend-digest: ${{ steps.push-frontend.outputs.digest }}
+      image-tag: ${{ steps.set-tag.outputs.tag }}
+      frontend-present: ${{ steps.check-frontend.outputs.exists }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Normalise image name to lowercase
+        run: echo "IMAGE_NAME=$(echo '${{ env.IMAGE_NAME }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
+      - name: Set image tag (SHA)
+        id: set-tag
+        run: echo "tag=${{ github.sha }}" >> $GITHUB_OUTPUT
+
+      # `kustomize` image keys are the CHANGE_ME names baked into k8s/base and
+      # k8s/overlays/prod; the deploy step rewrites those exact keys.
+      - name: Check frontend exists
+        id: check-frontend
+        run: |
+          if [ -f frontend/package.json ]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_TOKEN }}
+
+      - name: Build & push backend
+        id: push-backend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-backend:${{ steps.set-tag.outputs.tag }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-backend:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # There is no frontend/ directory yet, so this build would hard-fail on a
+      # missing build context. Guarded so the backend pipeline can ship first.
+      - name: Build & push frontend
+        id: push-frontend
+        if: ${{ steps.check-frontend.outputs.exists == 'true' }}
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-frontend:${{ steps.set-tag.outputs.tag }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-frontend:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Generate SBOM (backend)
+        uses: anchore/sbom-action@v0.17.0
+        with:
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-backend:${{ steps.set-tag.outputs.tag }}
+          output-file: sbom-backend.spdx.json
+
+      - name: Generate SBOM (frontend)
+        if: ${{ steps.check-frontend.outputs.exists == 'true' }}
+        uses: anchore/sbom-action@v0.17.0
+        with:
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-frontend:${{ steps.set-tag.outputs.tag }}
+          output-file: sbom-frontend.spdx.json
+
+      - name: Upload SBOMs
+        uses: actions/upload-artifact@v4
+        with:
+          name: sboms
+          path: |
+            sbom-backend.spdx.json
+            sbom-frontend.spdx.json
+
+  deploy-k8s:
+    name: Deploy to K8s (k3d)
+    runs-on: ubuntu-latest
+    needs: build-push
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install k3d
+        run: |
+          curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+
+      - name: Create k3d cluster
+        run: |
+          k3d cluster create ${{ env.CLUSTER_NAME }} \
+            --servers 1 --agents 2 \
+            --port "80:80@loadbalancer" \
+            --port "443:443@loadbalancer" \
+            --wait
+
+      - name: Install kustomize
+        run: |
+          curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+          sudo mv kustomize /usr/local/bin/
+
+      # k3d ships Traefik, but k8s/base/ingress.yaml asks for ingressClassName
+      # `nginx`. Without a controller that class matches nothing, the Ingress is
+      # never programmed and the smoke test below can never pass.
+      - name: Install ingress-nginx controller
+        run: |
+          kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.11.2/deploy/static/provider/kubeadm/deploy.yaml
+          kubectl rollout status deployment/ingress-nginx-controller -n ingress-nginx --timeout=300s
+
+      # `kubectl get hpa` prints <unknown> for CURRENT/METRICS without a metrics
+      # pipeline. This is also needed for the HPA bonus evidence in the runbook.
+      - name: Install metrics-server
+        run: |
+          kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+          # k3d kubelet certs are self-signed, so metrics-server rejects them
+          # unless we allow insecure TLS.
+          kubectl patch deployment metrics-server -n kube-system --type=json \
+            -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'
+          kubectl rollout status deployment/metrics-server -n kube-system --timeout=300s
+
+      # vpa.yaml is part of k8s/base, so without the CRD `kubectl apply` fails with
+      # "no matches for kind VerticalPodAutoscaler" and nothing gets deployed.
+      - name: Install VPA CRDs
+        continue-on-error: true
+        run: |
+          kubectl apply -f https://github.com/kubernetes/autoscaler/releases/latest/download/vpa-crds.yaml
+
+      # BONUS: deploy by immutable image digest rather than by mutable tag.
+      # `kustomize edit set image` APPENDS, so the new ref must be keyed on the
+      # EXISTING name (ghcr.io/CHANGE_ME/civicpulse-*) or kustomize matches
+      # nothing and the manifests still render `...:CHANGE_ME`.
+      - name: Apply K8s manifests (by image digest)
+        run: |
+          set -euo pipefail
+          BACKEND_REPO="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-backend"
+          BACKEND_DIGEST="${{ needs.build-push.outputs.backend-digest }}"
+
+          if [ -z "$BACKEND_DIGEST" ]; then
+            echo "::error::build-push did not report a backend image digest"
+            exit 1
+          fi
+
+          FRONTEND_REPO="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-frontend"
+
+          cd k8s/overlays/prod
+
+          # Two reasons to drop the placeholder `newTag: CHANGE_ME` lines first:
+          #  1. kustomize's image transformer prefers newTag over a digest embedded
+          #     in newName and would render `...@sha256:CHANGE_ME`.
+          #  2. A surviving `ghcr.io/CHANGE_ME/...` is not a valid image reference,
+          #     so the API server would reject the object at apply time.
+          sed -i '/^    newTag: .*$/d' kustomization.yaml
+
+          kustomize edit set image \
+            "ghcr.io/CHANGE_ME/civicpulse-backend=${BACKEND_REPO}@${BACKEND_DIGEST}"
+
+          if [ "${{ needs.build-push.outputs.frontend-present }}" = "true" ]; then
+            FRONTEND_DIGEST="${{ needs.build-push.outputs.frontend-digest }}"
+            if [ -z "$FRONTEND_DIGEST" ]; then
+              echo "::error::frontend-present was true but no frontend digest was reported"
+              exit 1
+            fi
+            kustomize edit set image \
+              "ghcr.io/CHANGE_ME/civicpulse-frontend=${FRONTEND_REPO}@${FRONTEND_DIGEST}"
+          else
+            # No frontend image was published. Still has to be a *valid* reference,
+            # otherwise the whole apply is rejected; the Deployment will simply sit
+            # in ImagePullBackOff, which the frontend rollout step already tolerates.
+            echo "::warning::frontend/ is not in the tree - pinning frontend Deployment to a pending image"
+            kustomize edit set image \
+              "ghcr.io/CHANGE_ME/civicpulse-frontend=${FRONTEND_REPO}:pending"
+          fi
+
+          kustomize build . > /tmp/rendered.yaml
+
+          # Prove the substitution actually took effect instead of trusting it.
+          echo "Rendered images:"
+          grep -n 'image:' /tmp/rendered.yaml
+          if grep -q 'CHANGE_ME' /tmp/rendered.yaml; then
+            echo "::error::rendered manifest still contains a CHANGE_ME placeholder"
+            grep -n 'CHANGE_ME' /tmp/rendered.yaml
+            exit 1
+          fi
+          if ! grep -q "image: ${BACKEND_REPO}@${BACKEND_DIGEST}$" /tmp/rendered.yaml; then
+            echo "::error::backend was not deployed by digest ${BACKEND_DIGEST}"
+            exit 1
+          fi
+
+          # Tolerate a missing VPA CRD: one optional autoscaler object must not
+          # block the whole deployment.
+          if kubectl get crd verticalpodautoscalers.autoscaling.k8s.io >/dev/null 2>&1; then
+            kubectl apply -f /tmp/rendered.yaml
+          else
+            echo "::warning::VPA CRD unavailable - skipping VerticalPodAutoscaler resources"
+            python3 - <<'PY' | kubectl apply -f -
+          import sys
+          docs = open('/tmp/rendered.yaml', encoding='utf-8').read().split('\n---\n')
+          kept = [d for d in docs if 'kind: VerticalPodAutoscaler' not in d]
+          sys.stdout.write('\n---\n'.join(kept))
+          PY
+          fi
+
+      - name: Wait for backend rollout
+        run: |
+          kubectl rollout status deployment/backend -n civicpulse --timeout=300s
+
+      - name: Wait for frontend rollout
+        # Non-fatal while the frontend is not being built: no image is published,
+        # so this Deployment sits in ImagePullBackOff by design.
+        if: ${{ needs.build-push.outputs.frontend-present == 'true' }}
+        run: |
+          kubectl rollout status deployment/frontend -n civicpulse --timeout=300s
+
+      # /health, /ready and /metrics live at the backend root, NOT under /api, so
+      # the Ingress (which only routes /api to the backend) never exposes them.
+      # /api/stats is the routed, public equivalent and exercises the whole chain:
+      # ingress-nginx -> backend -> Postgres + Redis.
+      - name: Smoke test Ingress
+        run: |
+          set -uo pipefail
+          INGRESS_IP=$(kubectl get svc -n ingress-nginx ingress-nginx-controller \
+            -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
+          if [ -z "$INGRESS_IP" ]; then
+            INGRESS_IP="localhost"
+          fi
+          echo "Ingress address: $INGRESS_IP"
+
+          for i in $(seq 1 30); do
+            if curl -sf -H "Host: civicpulse.local" "http://${INGRESS_IP}/api/stats" -o /tmp/stats.json; then
+              echo "Ingress smoke test passed on attempt ${i}"
+              cat /tmp/stats.json
+              echo
+              exit 0
+            fi
+            echo "Attempt ${i}: ingress not serving /api/stats yet, retrying in 5s"
+            sleep 5
+          done
+
+          echo "::error::Ingress smoke test never succeeded"
+          kubectl -n civicpulse get ingress,svc,deploy,pods || true
+          exit 1
+
+      - name: Print HPA status
+        run: |
+          # Wait for real metrics so CURRENT/METRICS are numbers rather than
+          # <unknown> in the recorded evidence.
+          for i in $(seq 1 30); do
+            if kubectl top pods -n civicpulse >/dev/null 2>&1; then
+              echo "Metrics available after ${i} attempt(s)"
+              break
+            fi
+            echo "Waiting for metrics-server to report metrics... (${i})"
+            sleep 5
+          done
+          kubectl get hpa -n civicpulse
+
+      - name: Cleanup cluster
+        if: always()
+        run: |
+          k3d cluster delete ${{ env.CLUSTER_NAME }}

@@ -1,0 +1,510 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main, dev]
+  push:
+    branches: [dev]
+  # Reusable entry point: cd.yml calls this workflow as its "test" job so the
+  # exact same checks that gate PRs also gate a push to main.
+  workflow_call:
+
+# A second push to the same branch makes the previous run's results irrelevant:
+# it tested a commit that is no longer the tip. Cancelling is safe here because
+# ci.yml publishes nothing and touches no shared cluster. cd.yml deliberately
+# does not do this -- see its own concurrency block.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege by default. Individual jobs may widen this (e.g. packages: write)
+# via their own `permissions:` block, but nothing is granted implicitly.
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  lint-and-type:
+    name: Lint & Typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # `hashFiles()` is NOT allowed in an `if:` expression (Context.md §19) and,
+      # more fundamentally, it evaluates against the workflow repo rather than the
+      # checked-out worktree. Probe the file on disk after checkout instead.
+      - name: Check frontend exists
+        id: check
+        run: |
+          if [ -f frontend/package.json ]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          # Without this, setup-python looks for requirements.txt, which does not
+          # exist in this repo -- the backend declares its dependencies in
+          # pyproject.toml. The cache then never hits, or the step errors out.
+          cache-dependency-path: backend/pyproject.toml
+
+      - name: Install backend deps
+        run: |
+          cd backend
+          pip install -e ".[dev]"
+
+      - name: Ruff lint
+        run: |
+          cd backend
+          ruff check .
+
+      - name: MyPy typecheck
+        run: |
+          cd backend
+          mypy app/ --ignore-missing-imports --no-strict-optional \
+            --disable-error-code=import-not-found \
+            --disable-error-code=attr-defined \
+            --disable-error-code=no-untyped-def \
+            --disable-error-code=no-untyped-call
+
+      - name: Set up Node
+        if: ${{ steps.check.outputs.exists == 'true' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend deps
+        if: ${{ steps.check.outputs.exists == 'true' }}
+        run: |
+          cd frontend
+          npm ci
+
+      - name: ESLint
+        if: ${{ steps.check.outputs.exists == 'true' }}
+        run: |
+          cd frontend
+          npm run lint
+
+      - name: TypeScript typecheck
+        if: ${{ steps.check.outputs.exists == 'true' }}
+        run: |
+          cd frontend
+          npx tsc --noEmit
+
+  test-backend:
+    name: Backend Tests
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/civicpulse
+      REDIS_URL: redis://localhost:6379/0
+      TRIAGE_PROVIDER: simulated
+      GROQ_API_KEY: ""
+      LOG_LEVEL: INFO
+      ENVIRONMENT: test
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: civicpulse
+        ports: [5432:5432]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports: [6379:6379]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install PostgreSQL & Redis client tools
+        run: |
+          sudo apt-get update && sudo apt-get install -y postgresql-client redis-tools
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          # Without this, setup-python looks for requirements.txt, which does not
+          # exist in this repo -- the backend declares its dependencies in
+          # pyproject.toml. The cache then never hits, or the step errors out.
+          cache-dependency-path: backend/pyproject.toml
+
+      - name: Install backend deps
+        run: |
+          cd backend
+          pip install -e ".[dev]"
+
+      - name: Wait for services
+        run: |
+          for i in {1..30}; do
+            if pg_isready -h localhost -p 5432 -U postgres; then
+              echo "Postgres ready"
+              break
+            fi
+            sleep 2
+          done
+          for i in {1..30}; do
+            if redis-cli -h localhost -p 6379 ping; then
+              echo "Redis ready"
+              break
+            fi
+            sleep 2
+          done
+
+      # Split into two psql calls: DROP DATABASE cannot run inside a transaction
+      # block, and a single `psql -c "DROP ...; CREATE ..."` fails (§19).
+      - name: Drop and recreate test database
+        run: |
+          PGPASSWORD=postgres psql -h localhost -U postgres -c "DROP DATABASE IF EXISTS civicpulse;"
+          PGPASSWORD=postgres psql -h localhost -U postgres -c "CREATE DATABASE civicpulse;"
+
+      - name: Run migrations
+        run: |
+          cd backend
+          alembic upgrade head
+
+      - name: Run tests with coverage
+        run: |
+          cd backend
+          pytest --cov=app --cov-report=xml --cov-fail-under=65
+
+      - name: Upload coverage
+        if: always()
+        continue-on-error: true
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./backend/coverage.xml
+
+  test-frontend:
+    name: Frontend Tests
+    runs-on: ubuntu-latest
+    outputs:
+      # Lets CD (and anyone reading the run) tell "tests passed" from
+      # "tests never ran because the frontend is not in the tree yet".
+      frontend-present: ${{ steps.check.outputs.exists }}
+    steps:
+      # Checkout MUST come first: the file we probe only exists after checkout.
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check frontend exists
+        id: check
+        run: |
+          if [ -f frontend/package.json ]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Set up Node
+        if: ${{ steps.check.outputs.exists == 'true' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend deps
+        if: ${{ steps.check.outputs.exists == 'true' }}
+        run: |
+          cd frontend
+          npm ci
+
+      - name: Run Vitest
+        if: ${{ steps.check.outputs.exists == 'true' }}
+        run: |
+          cd frontend
+          npm run test -- --run --coverage
+
+      # A green tick here must never be mistaken for "frontend tests passed" when
+      # nothing was actually executed, so say so explicitly in the log.
+      - name: Report skipped frontend tests
+        if: ${{ steps.check.outputs.exists != 'true' }}
+        run: |
+          {
+            echo "::notice title=Frontend tests SKIPPED::frontend/package.json is not present in this commit, so no frontend test, lint or typecheck command was executed."
+            echo "SKIPPED: frontend tests were NOT run (no frontend/package.json in the worktree)."
+            echo "This job passing is NOT evidence that the frontend is correct."
+          }
+
+  build:
+    name: Build & Scan Images
+    runs-on: ubuntu-latest
+    needs: [lint-and-type, test-backend]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Normalise image name to lowercase
+        run: echo "IMAGE_NAME=$(echo '${{ env.IMAGE_NAME }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
+      - name: Check frontend exists
+        id: check-frontend
+        run: |
+          if [ -f frontend/package.json ]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build backend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          push: false
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-backend:${{ github.sha }}
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # The Trivy CLI is installed directly rather than through
+      # aquasecurity/trivy-action. That action is a composite action which in
+      # turn calls aquasecurity/setup-trivy, so pinning it is a two-variable
+      # problem: every trivy-action release also pins a setup-trivy version, and
+      # those have not always existed. v0.28.0 pins setup-trivy@v0.2.1, and
+      # v0.29.0/v0.30.0 pin v0.2.2 -- none of which setup-trivy ever published.
+      # v0.33.1 does resolve, but defaults to Trivy v0.65.0, which is not a
+      # released version either (releases jump v0.69.3 -> v0.70.0), so its
+      # installer fails at run time with no useful message. Two layers of
+      # somebody else's pinning strategy is two layers that can be wrong
+      # without a commit from us.
+      #
+      # Installing the binary ourselves means exactly one version is pinned, in
+      # one place, and the checksum is verified against the checksum file
+      # published alongside the release. This is also what the assignment asks
+      # for: a scan "with a fixed version available".
+      - name: Install Trivy
+        run: |
+          set -euo pipefail
+          TRIVY_VERSION=v0.74.0
+          TRIVY_SHA256=2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a
+          URL="https://github.com/aquasecurity/trivy/releases/download/${TRIVY_VERSION}/trivy_0.74.0_Linux-64bit.tar.gz"
+          curl -sfL --retry 3 -o trivy.tar.gz "$URL"
+          echo "${TRIVY_SHA256}  trivy.tar.gz" | sha256sum -c -
+          tar -xzf trivy.tar.gz trivy
+          sudo install -m 0755 trivy /usr/local/bin/trivy
+          trivy --version
+
+      # The scan covers OS packages and language manifests. It previously passed
+      # --vuln-type library, which limited Trivy to pip and npm and silently
+      # excluded every OS-level CVE in python:3.12-slim -- glibc, OpenSSL, zlib.
+      # The job was named "Build & Scan Images" and read as a full image scan
+      # while checking only two dependency manifests.
+      #
+      # --ignore-unfixed is kept deliberately: a HIGH with no upstream fix is
+      # not actionable by us, and failing on it would mean a permanently red
+      # pipeline that everyone learns to ignore. Everything with a fix
+      # available fails the build via --exit-code 1.
+      - name: Trivy scan (backend)
+        run: |
+          set -euo pipefail
+          trivy image \
+            --exit-code 1 \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --scanners vuln \
+            --ignorefile .trivyignore.yaml \
+            "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-backend:${{ github.sha }}"
+
+      - name: Build frontend
+        id: build-frontend
+        if: ${{ steps.check-frontend.outputs.exists == 'true' }}
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          push: false
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-frontend:${{ github.sha }}
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Trivy scan (frontend)
+        if: ${{ steps.check-frontend.outputs.exists == 'true' }}
+        run: |
+          set -euo pipefail
+          trivy image \
+            --exit-code 1 \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --scanners vuln \
+            --ignorefile .trivyignore.yaml \
+            "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-frontend:${{ github.sha }}"
+
+  manifests:
+    name: Kubeconform Manifests
+    runs-on: ubuntu-latest
+    steps:
+      # The k8s/ tree only exists after checkout, so the probe has to run after it.
+      # Guarding the checkout itself made `exists` permanently false and kubeconform
+      # silently never ran.
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check k8s manifests exist
+        id: check
+        run: |
+          if [ -f k8s/overlays/prod/kustomization.yaml ]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Install kustomize
+        if: ${{ steps.check.outputs.exists == 'true' }}
+        run: |
+          curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+          sudo mv kustomize /usr/local/bin/
+
+      # kubeconform was never installed, so the validate step could only ever fail
+      # with "kubeconform: command not found" if it had actually been reached.
+      - name: Install kubeconform
+        if: ${{ steps.check.outputs.exists == 'true' }}
+        run: |
+          KUBECONFORM_VERSION=0.6.7
+          curl -sSL -o kubeconform.tar.gz \
+            "https://github.com/yannh/kubeconform/releases/download/v${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          tar -xzf kubeconform.tar.gz kubeconform
+          sudo mv kubeconform /usr/local/bin/
+          kubeconform -v
+
+      - name: Validate manifests
+        if: ${{ steps.check.outputs.exists == 'true' }}
+        run: |
+          # -ignore-missing-schemas: our own CRDs (VerticalPodAutoscaler) and
+          # newer/older API versions have no published schema; that is not a
+          # manifest error and must not fail the build.
+          kustomize build k8s/overlays/prod | kubeconform -strict -summary -ignore-missing-schemas
+
+      - name: Report skipped manifest validation
+        if: ${{ steps.check.outputs.exists != 'true' }}
+        run: |
+          echo "::notice title=Manifest validation SKIPPED::k8s/overlays/prod/kustomization.yaml not found; kubeconform did not run."
+
+  integration:
+    name: Compose Integration Smoke
+    runs-on: ubuntu-latest
+    env:
+      GROQ_API_KEY: ""
+      TRIAGE_PROVIDER: simulated
+      POSTGRES_PASSWORD: postgres
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create .env for CI
+        run: |
+          cat > .env <<'EOF'
+          POSTGRES_PASSWORD=postgres
+          TRIAGE_PROVIDER=simulated
+          GROQ_API_KEY=
+          LOG_LEVEL=INFO
+          ENVIRONMENT=development
+          EOF
+
+      - name: Start compose stack (no ollama)
+        run: |
+          docker compose up -d --build postgres redis backend
+
+      - name: Run migrations
+        run: |
+          for i in {1..20}; do
+            if docker compose exec -T backend alembic upgrade head 2>&1; then
+              echo "Migrations applied"
+              break
+            fi
+            echo "Waiting for backend to start... ($i)"
+            sleep 3
+          done
+
+      - name: Wait for /ready
+        run: |
+          for i in {1..30}; do
+            if curl -sf http://localhost:8000/ready | grep -q '"status":"ready"'; then
+              echo "Backend ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Timeout waiting for /ready"
+          docker compose logs backend
+          exit 1
+
+      - name: Submit complaint
+        run: |
+          RESPONSE=$(curl -s -X POST http://localhost:8000/api/complaints \
+            -H "Content-Type: application/json" \
+            -d '{"text":"Water main burst on Mall Road since fajr water entering ground floors","location":"Mall Road, Lahore"}')
+          echo "$RESPONSE"
+          echo "$RESPONSE" | grep -q '"status":"open"'
+
+          # The triage output is the point of the AI layer: assert the category is
+          # one the API contract actually defines, and that a provider signed off.
+          echo "$RESPONSE" | grep -Eq '"category":"(water|electricity|sanitation|roads|streetlights|other)"'
+          echo "$RESPONSE" | grep -Eq '"triaged_by":"[^"]+"'
+
+      - name: Verify complaint persisted
+        run: |
+          curl -sf http://localhost:8000/api/complaints | grep -q "Mall Road"
+
+      # The old version of this step grepped the response BODY twice. The body is
+      # byte-identical on a cache HIT and a MISS, so it asserted nothing at all.
+      # The only thing that distinguishes the two is the X-Cache response HEADER.
+      - name: Verify cache MISS then HIT
+        run: |
+          # /ready and the complaint POSTs above do not populate the stats cache,
+          # so the first call must be a MISS.
+          curl -sfD /tmp/stats1.h -o /dev/null http://localhost:8000/api/stats
+          grep -i '^x-cache:' /tmp/stats1.h
+          grep -qi '^x-cache: *MISS' /tmp/stats1.h
+
+          curl -sfD /tmp/stats2.h -o /dev/null http://localhost:8000/api/stats
+          grep -i '^x-cache:' /tmp/stats2.h
+          grep -qi '^x-cache: *HIT' /tmp/stats2.h
+
+      - name: Verify cache invalidation on write
+        run: |
+          # A write must drop the cached aggregates, otherwise the stats view would
+          # keep serving a stale snapshot for up to the 30s TTL.
+          curl -s -X POST http://localhost:8000/api/complaints \
+            -H "Content-Type: application/json" \
+            -d '{"text":"Garbage not collected for three days in Model Town block B","location":"Model Town, Lahore"}' \
+            -o /dev/null -w 'POST status: %{http_code}\n'
+
+          curl -sfD /tmp/stats3.h -o /dev/null http://localhost:8000/api/stats
+          grep -i '^x-cache:' /tmp/stats3.h
+          grep -qi '^x-cache: *MISS' /tmp/stats3.h
+
+          # And the cache must still work after the invalidation, otherwise the
+          # first assertion above could have passed for the wrong reason.
+          curl -sfD /tmp/stats4.h -o /dev/null http://localhost:8000/api/stats
+          grep -i '^x-cache:' /tmp/stats4.h
+          grep -qi '^x-cache: *HIT' /tmp/stats4.h
+
+      - name: Tear down
+        if: always()
+        run: |
+          docker compose down -v

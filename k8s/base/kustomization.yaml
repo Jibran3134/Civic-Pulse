@@ -1,0 +1,37 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: civicpulse
+
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - secret.yaml
+  - postgres.yaml
+  - redis.yaml
+  - backend.yaml
+  - frontend.yaml
+  - services.yaml
+  - ingress.yaml
+  - hpa.yaml
+  - vpa.yaml
+  - pdb.yaml
+
+# `labels` rather than the deprecated `commonLabels`. The important
+# difference is includeSelectors: false. commonLabels injects into
+# spec.selector.matchLabels as well as metadata, and a Deployment's selector is
+# IMMUTABLE -- so a commonLabels entry that ever changes makes the Deployment
+# un-updatable without a delete-and-recreate, which is a bad day during a
+# rollout. Keeping the labels out of the selector means the selector stays just
+# `app: <name>` and can never drift.
+labels:
+  - pairs:
+      app.kubernetes.io/name: civicpulse
+      app.kubernetes.io/part-of: civicpulse
+    includeSelectors: false
+
+images:
+  - name: ghcr.io/CHANGE_ME/civicpulse-backend
+    newTag: CHANGE_ME
+  - name: ghcr.io/CHANGE_ME/civicpulse-frontend
+    newTag: CHANGE_ME
