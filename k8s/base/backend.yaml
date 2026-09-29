@@ -29,6 +29,8 @@ spec:
         runAsUser: 1000
         runAsGroup: 1000
         fsGroup: 1000
+      imagePullSecrets:
+        - name: ghcr-pull-secret
       containers:
         - name: backend
           image: ghcr.io/CHANGE_ME/civicpulse-backend:CHANGE_ME
@@ -96,8 +98,11 @@ spec:
               cpu: "1000m"
               memory: "1Gi"
             requests:
-              cpu: "500m"
-              memory: "512Mi"
+              # Reduced from 500m/512Mi: the k3d CI cluster (2 vCPU runner)
+              # cannot schedule 2 replicas at those values alongside postgres,
+              # redis, ingress-nginx, and metrics-server.
+              cpu: "100m"
+              memory: "256Mi"
           livenessProbe:
             httpGet:
               path: /health

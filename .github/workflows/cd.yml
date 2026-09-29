@@ -150,6 +150,20 @@ jobs:
             --port "443:443@loadbalancer" \
             --wait
 
+      - name: Create GHCR imagePullSecret
+        # k3d nodes pull images from ghcr.io at runtime. Without credentials
+        # the pull fails with 401 for private packages. Create the secret in
+        # the civicpulse namespace (which kustomize creates via namespace.yaml)
+        # before applying the manifests so Deployments can reference it.
+        run: |
+          kubectl create namespace civicpulse --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create secret docker-registry ghcr-pull-secret \
+            --namespace civicpulse \
+            --docker-server=ghcr.io \
+            --docker-username=${{ github.actor }} \
+            --docker-password=${{ secrets.GHCR_TOKEN }} \
+            --dry-run=client -o yaml | kubectl apply -f -
+
       - name: Install kustomize
         run: |
           KUSTOMIZE_VERSION=5.4.3
