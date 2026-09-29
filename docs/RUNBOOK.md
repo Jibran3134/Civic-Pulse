@@ -148,3 +148,113 @@ output; the dev server is faster for regular work.
 | Blank dashboard / 0 complaints | Database empty | `cd backend && python scripts/seed.py` |
 | Category/priority badges not rendering | Types not re-exported | Check `frontend/src/types/index.ts` |
 | `GROQ_API_KEY is not configured` in logs | Missing env var | Set in `.env` or use `TRIAGE_PROVIDER=simulated` |
+
+---
+
+## Operations & Infrastructure
+
+### 1. How to Deploy
+
+#### A. Local Development (Docker Compose)
+```bash
+# Start all 5 services with automated migrations and seed data
+docker compose up -d
+
+# Verify readiness of all services
+curl http://localhost:8000/ready
+```
+
+#### B. Kubernetes (k3d / Production Cluster)
+```bash
+# Apply kustomize overlay for production
+kubectl apply -k k8s/overlays/prod
+
+# Verify pod status and rollout progress
+kubectl rollout status deployment/backend -n civicpulse
+kubectl get pods -n civicpulse
+```
+
+---
+
+### 2. How to Roll Back
+
+#### A. Kubernetes Automated Rollback
+If a newly deployed image fails health checks or introduces regressions:
+
+```bash
+# View rollout revision history
+kubectl rollout history deployment/backend -n civicpulse
+
+# Undo deployment and revert to the immediate previous revision
+kubectl rollout undo deployment/backend -n civicpulse
+
+# Revert to a specific revision (e.g., revision 2)
+kubectl rollout undo deployment/backend --to-revision=2 -n civicpulse
+
+# Confirm rollback completion
+kubectl rollout status deployment/backend -n civicpulse
+```
+
+#### B. Git / Docker Compose Rollback
+```bash
+# Revert to the last known stable Git tag or commit
+git checkout <previous-tag-or-commit-sha>
+
+# Restart containers using immutable image digests
+docker compose -f compose.prod.yaml up -d
+```
+
+---
+
+### 3. How to Read Logs
+
+#### A. Docker Compose
+```bash
+# Stream all logs with timestamps
+docker compose logs -f -t
+
+# Stream structured JSON logs for the backend only
+docker compose logs -f backend
+
+# Stream Redis or PostgreSQL logs
+docker compose logs -f redis
+docker compose logs -f postgres
+```
+
+#### B. Kubernetes
+```bash
+# Stream backend application logs from all replicas
+kubectl logs -l app=backend -n civicpulse -f --tail=100
+
+# Filter for fallback warnings or errors
+kubectl logs -l app=backend -n civicpulse | grep "triage_fallback"
+```
+
+---
+
+### 4. What to Do When Triage Fails
+
+1. **Verify if fallback triggered**:
+   Query the provider metadata endpoint:
+   ```bash
+   curl http://localhost:8000/api/meta/providers
+   ```
+   Check the `recent_outcomes` array. If `fallback: true` and `provider: "rules:fallback"`, the system is safely operating on the local deterministic heuristic engine.
+
+2. **Inspect the error class in the warning log**:
+   Check backend logs for the structured warning:
+   ```json
+   {"event": "triage_fallback", "complaint_id": "...", "provider": "llm:groq", "error_class": "HTTPStatusError"}
+   ```
+   - **`HTTPStatusError (401/403)`**: Invalid or expired `GROQ_API_KEY`. Update key in `.env` or Kubernetes secret.
+   - **`HTTPStatusError (429)`**: Rate limit exceeded. The system will automatically use Redis cache and rules fallback.
+   - **`TimeoutException`**: Network latency exceeded 10.0s. Check egress connectivity.
+
+3. **Switch to offline Ollama container**:
+   If cloud LLM is down indefinitely, switch to local Ollama:
+   ```bash
+   # In .env or Kubernetes ConfigMap:
+   TRIAGE_PROVIDER=ollama
+   ```
+   Restart backend service: `docker compose restart backend`.
+

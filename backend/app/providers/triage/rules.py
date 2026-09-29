@@ -52,12 +52,12 @@ class RuleBasedTriage(TriageProvider):
         }
 
     def _classify(self, text: str, patterns: dict) -> str | None:
-        scores = {}
+        scores: dict[str, int] = {}
         for category, pattern_list in patterns.items():
             score = sum(1 for pattern in pattern_list if pattern.search(text))
             if score > 0:
                 scores[category.value] = score
-        return max(scores, key=scores.get) if scores else None
+        return max(scores, key=lambda k: scores[k]) if scores else None
 
     async def triage(self, text: str, location: str) -> TriageResult:
         full_text = f"{text} {location}".lower()
