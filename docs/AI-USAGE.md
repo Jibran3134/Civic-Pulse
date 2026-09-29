@@ -1,7 +1,7 @@
 # AI Usage Disclosure — CivicPulse
 
 **Rubric §5.5 — Continuous AI Disclosure**
-Both partners must be able to defend every line written here at the viva.
+
 
 ---
 
