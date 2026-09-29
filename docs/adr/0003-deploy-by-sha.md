@@ -56,3 +56,17 @@ We enforce **Deploy-by-Digest (SHA-256)** across all CI/CD pipelines, Kustomize 
 4. **Production Compose Manifest (`compose.prod.yaml`)**:
    In production Compose topologies, container images pin explicit versioned and digested references instead of relying on local image rebuilds.
 
+---
+
+## 4. Consequences
+
+### Positive
+* **Zero Drift**: Eliminates the "works on my machine / fails in cluster" discrepancy caused by floating tags.
+* **Instant & Reliable Rollback**: Rollbacks (`kubectl rollout undo`) revert immediately to the previous immutable image digest already cached on the node, taking seconds rather than minutes.
+* **Security Auditability**: Security scans (Trivy) in CI guarantee that what was scanned is exactly what is running in the pod.
+
+### Negative / Trade-offs
+* Image names in Kubernetes manifests are long cryptographic hashes (e.g. `@sha256:4b12...`), requiring automation tools (`kustomize edit`) rather than manual edits.
+* Registry garbage collection policies must be configured with retention rules to prevent deleting active digests.
+
+
