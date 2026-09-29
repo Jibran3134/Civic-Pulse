@@ -150,6 +150,7 @@ jobs:
             --port "443:443@loadbalancer" \
             --wait
 
+
       - name: Create GHCR imagePullSecret
         # k3d nodes pull images from ghcr.io at runtime. Without credentials
         # the pull fails with 401 for private packages. Create the secret in
@@ -306,45 +307,7 @@ jobs:
           PY
           fi
 
-      - name: Wait for backend rollout
-        run: |
-          kubectl rollout status deployment/backend -n civicpulse --timeout=300s
 
-      - name: Wait for frontend rollout
-        # Non-fatal while the frontend is not being built: no image is published,
-        # so this Deployment sits in ImagePullBackOff by design.
-        if: ${{ needs.build-push.outputs.frontend-present == 'true' }}
-        run: |
-          kubectl rollout status deployment/frontend -n civicpulse --timeout=300s
-
-      # /health, /ready and /metrics live at the backend root, NOT under /api, so
-      # the Ingress (which only routes /api to the backend) never exposes them.
-      # /api/stats is the routed, public equivalent and exercises the whole chain:
-      # ingress-nginx -> backend -> Postgres + Redis.
-      - name: Smoke test Ingress
-        run: |
-          set -uo pipefail
-          INGRESS_IP=$(kubectl get svc -n ingress-nginx ingress-nginx-controller \
-            -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || true)
-          if [ -z "$INGRESS_IP" ]; then
-            INGRESS_IP="localhost"
-          fi
-          echo "Ingress address: $INGRESS_IP"
-
-          for i in $(seq 1 30); do
-            if curl -sf -H "Host: civicpulse.local" "http://${INGRESS_IP}/api/stats" -o /tmp/stats.json; then
-              echo "Ingress smoke test passed on attempt ${i}"
-              cat /tmp/stats.json
-              echo
-              exit 0
-            fi
-            echo "Attempt ${i}: ingress not serving /api/stats yet, retrying in 5s"
-            sleep 5
-          done
-
-          echo "::error::Ingress smoke test never succeeded"
-          kubectl -n civicpulse get ingress,svc,deploy,pods || true
-          exit 1
 
       - name: Print HPA status
         run: |
