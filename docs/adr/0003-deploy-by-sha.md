@@ -69,4 +69,3 @@ We enforce **Deploy-by-Digest (SHA-256)** across all CI/CD pipelines, Kustomize 
 * Image names in Kubernetes manifests are long cryptographic hashes (e.g. `@sha256:4b12...`), requiring automation tools (`kustomize edit`) rather than manual edits.
 * Registry garbage collection policies must be configured with retention rules to prevent deleting active digests.
 
-
