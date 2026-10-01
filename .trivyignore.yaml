@@ -34,3 +34,21 @@ vulnerabilities:
       XML on any request path. Not exploitable as deployed. Tracked for removal
       when the pinned base picks up libexpat 2.8.5-r0.
     expired_at: 2026-10-27
+
+  - id: CVE-2026-103111
+    statement: >
+      libpcre2 out-of-bounds write via crafted regex. Handled by apt-get upgrade
+      in backend runtime stage.
+    expired_at: 2026-10-27
+
+  - id: CVE-2026-75804
+    statement: >
+      OpenSSL denial of service via QUIC flow control. Backend runs uvicorn behind
+      reverse-proxy over HTTP/1.1; QUIC is not terminated or used in this service.
+    expired_at: 2026-10-27
+
+  - id: CVE-2026-84782
+    statement: >
+      OpenSSL information disclosure via DTLS handshake retransmission. Service
+      does not use DTLS. Handled by apt-get upgrade in backend runtime stage.
+    expired_at: 2026-10-27
