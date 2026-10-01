@@ -3,6 +3,8 @@ name: CD
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
 
 # Do NOT cancel in progress. cd.yml creates a k3d cluster with a fixed name
 # and deletes it under `if: always()`. Cancelling a run mid-deploy would kill
