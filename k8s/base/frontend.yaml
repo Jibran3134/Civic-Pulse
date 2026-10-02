@@ -25,6 +25,8 @@ spec:
         runAsUser: 101
         runAsGroup: 101
         fsGroup: 101
+      imagePullSecrets:
+        - name: ghcr-pull-secret
       containers:
         - name: frontend
           image: ghcr.io/CHANGE_ME/civicpulse-frontend:CHANGE_ME
@@ -37,8 +39,8 @@ spec:
               cpu: "500m"
               memory: "256Mi"
             requests:
-              cpu: "250m"
-              memory: "128Mi"
+              cpu: "50m"
+              memory: "64Mi"
           # Slow start is not failure. The startupProbe gates the liveness and
           # readiness probes: until it succeeds, neither runs, so nginx coming
           # up slowly cannot trigger a restart loop. This is the probe that

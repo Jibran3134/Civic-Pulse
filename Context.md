@@ -429,33 +429,6 @@ ignore_missing_imports = true
 ```
 Then: `if: ${{ steps.check.outputs.exists == 'true' }}`
 
-### 27. CD — `rendered manifest still contains a CHANGE_ME placeholder`
-**Error:** Every image substituted correctly (log showed the right digests at lines 223/280/322), then:
-```
-Error: rendered manifest still contains a CHANGE_ME placeholder
-40:  GROQ_API_KEY: CHANGE_ME
-```
-**Root Cause:** The guard was `grep -q 'CHANGE_ME' /tmp/rendered.yaml` — unscoped, so it matched the `civicpulse-secrets` Secret block, not images. `k8s/base/secret.yaml` still held literal `CHANGE_ME` values.
-**Fix (two parts):**
-- `k8s/base/secret.yaml` converted from `stringData` to base64 `data`, so the committed Secret holds the real repo password (`postgres`, same as `.env.example`/`ci.yml`) and no longer contains `CHANGE_ME`. `DATABASE_URL` embeds that password, so it was re-encoded to match.
-- Guard narrowed to `grep -qE '^[[:space:]]*image:.*CHANGE_ME'`, so it fails only on image placeholders.
-- `GROQ_API_KEY` stays **empty** in git (real key is a GitHub secret, never committed). `cd.yml` now base64-encodes `${{ secrets.GROQ_API_KEY }}` and patches it into the rendered manifest before `kubectl apply`, keeping `secret.yaml` the single source of truth for the other keys. Empty is a valid Secret key, so the pod still starts and `services/triage.py` falls back to rules.
-- Verified locally: `kustomize build k8s/overlays/prod` renders 16 objects, 0 `CHANGE_ME` outside images, `kubeconform -strict` clean, `actionlint` clean.
-
-### 28. CI — `Github rate-limiter failed the request` installing kustomize
-**Error:** `Run curl -s ".../hack/install_kustomize.sh" | bash` → `Github rate-limiter failed the request. Either authenticate or wait a couple of minutes.` → exit 1.
-**Root Cause:** `install_kustomize.sh` resolves the *latest* release through `api.github.com`. GitHub-hosted runners share outbound IPs, so unauthenticated API calls exhaust the 60/hr per-IP limit and the script aborts. The download itself was never the problem — the version lookup was.
-**Fix:** Both workflows now download a **pinned** release tarball instead, which is a plain asset GET on `github.com` and not rate-limited:
-```bash
-KUSTOMIZE_VERSION=5.4.3
-curl -sSL -o kustomize.tar.gz \
-  "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
-tar -xzf kustomize.tar.gz kustomize
-sudo mv kustomize /usr/local/bin/
-```
-Applies to `ci.yml` (`manifests` job) and `cd.yml` (`deploy-k8s` job) — one fix, because CD reuses CI via `uses: ./.github/workflows/ci.yml`. Matches the existing kubeconform step's style. Pinning also stops the manifests being validated/substituted by a kustomize version that changes under us.
-**Verified:** full `manifests` job replica in a clean container → kustomize v5.4.3, kubeconform v0.6.7, `16 resources, Valid: 15, Invalid: 0, Errors: 0, Skipped: 1` (skip = VPA CRD schema, expected under `-ignore-missing-schemas`); `actionlint` clean on both workflows.
-**Note:** `k3d`'s `install.sh` (cd.yml) was checked and is safe — it uses `releases/latest` on `github.com` plus a direct asset download, no `api.github.com` call.
 ### 27. ingress-nginx `provider/kubeadm` Manifest 404
 **Error:** `error: unable to read URL ".../controller-v1.11.2/deploy/static/provider/kubeadm/deploy.yaml", server reported 404 Not Found`
 **Root Cause:** Upstream deleted `deploy/static/provider/kubeadm/` and folded the identical generic manifest into `deploy/static/provider/cloud/`. The tag `controller-v1.11.2` is fine; only the path moved.
